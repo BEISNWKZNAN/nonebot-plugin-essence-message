@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nonebot-plugin-essence-message"
-version = "0.1.0"
+version = "0.1.1"
 description = "Used to organize essence messages"
 license = "MIT"
 authors = ["beis <havaagoodtime@gmail.com>"]
@@ -17,7 +17,3 @@ nonebot-adapter-onebot = "^2.4.4"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[[tool.poetry.source]]
-name = "aliyun"
-url = "https://mirrors.aliyun.com/pypi/simple"
