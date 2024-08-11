@@ -1,6 +1,8 @@
 from pydantic import BaseModel
+from nonebot import require
 
-import nonebot_plugin_localstore as store
+require("nonebot_plugin_localstore")
+from nonebot_plugin_localstore import get_data_file
 
 
 class config(BaseModel):
@@ -8,5 +10,5 @@ class config(BaseModel):
     essence_enable_groups: list = ["all"]
 
     def db():
-        PATH_DATA = store.get_data_file("essence_message", "essence_message.db")
+        PATH_DATA = get_data_file("essence_message", "essence_message.db")
         return PATH_DATA
