@@ -505,6 +505,27 @@ url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 reference = "mirrors"
 
 [[package]]
+name = "nonebot-plugin-localstore"
+version = "0.7.1"
+description = "Local Storage Support for NoneBot2"
+optional = false
+python-versions = ">=3.9,<4.0"
+files = [
+    {file = "nonebot_plugin_localstore-0.7.1-py3-none-any.whl", hash = "sha256:7908af162d1d0e8c736ae8863723325d057289f6b080ae44ff9ff39294f9ed16"},
+    {file = "nonebot_plugin_localstore-0.7.1.tar.gz", hash = "sha256:9c2a7b39b50240896d9306adb79d8047308d0e77b88e3272b19be4908bdaabc9"},
+]
+
+[package.dependencies]
+nonebot2 = ">=2.2.0,<3.0.0"
+pydantic = ">=1.10.0,<2.5.0 || >2.5.0,<2.5.1 || >2.5.1,<3.0.0"
+typing-extensions = ">=4.0.0,<5.0.0"
+
+[package.source]
+type = "legacy"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+reference = "mirrors"
+
+[[package]]
 name = "nonebot2"
 version = "2.3.2"
 description = "An asynchronous python bot framework."
@@ -931,4 +952,4 @@ reference = "mirrors"
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.9,<4.0"
-content-hash = "a011326cb2663bbabc21693ed83e811c542ffcdb286cb406feec74f4f7cb0fae"
+content-hash = "f4e94ba3531679d4f745047c76025bb6cbabaad36441d7e884c739d924023ac4"
