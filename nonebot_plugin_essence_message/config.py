@@ -1,8 +1,6 @@
-from pathlib import Path
 from pydantic import BaseModel
 
-PATH = Path().absolute()
-PATH_DATA = PATH / "data" / "essence_message"
+import nonebot_plugin_localstore as store
 
 
 class config(BaseModel):
@@ -10,5 +8,5 @@ class config(BaseModel):
     essence_enable_groups: list = ["all"]
 
     def db():
-        (PATH_DATA).mkdir(parents=True, exist_ok=True)
-        return PATH_DATA / "essence_message.db"
+        PATH_DATA = store.get_data_file("essence_message", "essence_message.db")
+        return PATH_DATA

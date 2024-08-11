@@ -26,7 +26,7 @@ __plugin_meta__ = PluginMetadata(
     supported_adapters={"~onebot.v11"},
 )
 
-essence_set = on_type((NoticeEvent,), priority=10, block=False, rule=trigger_rule)
+essence_set = on_type((NoticeEvent,), priority=10, block=False)
 
 command_matcher = on_command(
     "essence", priority=5, permission=GROUP, block=False, rule=trigger_rule
@@ -92,7 +92,7 @@ async def command_main(
                 + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
                 + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
                 + "essence fetchall - 获取群内所有精华消息\n"
-                + "essence export - 导出的精华消息\n"
+                + "essence export - 导出精华消息"
             )
         else:
             if args[0] == "help":
@@ -104,7 +104,7 @@ async def command_main(
                     + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
                     + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
                     + "essence fetchall - 获取群内所有精华消息\n"
-                    + "essence export - 导出的精华消息\n"
+                    + "essence export - 导出精华消息"
                 )
             elif args[0] == "random":
                 if reach_limit(event.get_session_id()):
