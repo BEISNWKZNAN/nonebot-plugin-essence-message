@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nonebot-plugin-essence-message"
-version = "0.1.3"
+version = "0.1.4"
 description = "Used to organize essence messages"
 license = "MIT"
 authors = ["beis <havaagoodtime@gmail.com>"]
