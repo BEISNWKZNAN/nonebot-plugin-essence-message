@@ -6,7 +6,8 @@ PATH_DATA = PATH / "data" / "essence_message"
 
 
 class config(BaseModel):
-    essence_random_limit:int = 5
+    essence_random_limit: int = 5
+    essence_enable_groups: list = ["all"]
 
     def db():
         (PATH_DATA).mkdir(parents=True, exist_ok=True)

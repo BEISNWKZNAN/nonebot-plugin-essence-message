@@ -1,151 +1,74 @@
-import httpx
-import asyncio
-import base64
-import time
+from asyncio import gather
 
-from nonebot import on_type, on_command, get_driver
+from nonebot import on_type, on_command
 from nonebot.adapters import Message
 from nonebot.adapters.onebot.v11 import (
     NoticeEvent,
     GroupMessageEvent,
-    NetworkError,
-    ActionFailed,
     MessageSegment,
     MessageEvent,
 )
 from nonebot.adapters.onebot.v11 import GROUP, GROUP_ADMIN, GROUP_OWNER
 from nonebot.adapters.onebot.v11.bot import Bot
 from nonebot.params import CommandArg
-from nonebot.log import logger
+from nonebot.plugin import PluginMetadata
 
-from .dateset import DatabaseHandler
+from .Helper import format_msg, reach_limit, get_name, trigger_rule, db
 from .config import config
 
-essence_set = on_type(
-    (NoticeEvent,),
-    priority=10,
-    block=False,
+__plugin_meta__ = PluginMetadata(
+    name="精华消息管理",
+    description="用于整理精华消息",
+    usage=("自动存储精华消息备份并提供一些查询功能"),
+    type="application",
+    homepage="https://github.com/BEISNWKZNAN/nonebot-plugin-essence-message",
+    config=config,
+    supported_adapters={"~onebot.v11"},
 )
-command_matcher = on_command("essence", priority=5, permission=GROUP, block=False)
+
+essence_set = on_type((NoticeEvent,), priority=10, block=False, rule=trigger_rule)
+
+command_matcher = on_command(
+    "essence", priority=5, permission=GROUP, block=False, rule=trigger_rule
+)
 admin_command_matcher = on_command(
-    "essence", priority=4, permission=GROUP_ADMIN | GROUP_OWNER, block=False
+    "essence",
+    priority=4,
+    permission=GROUP_ADMIN | GROUP_OWNER,
+    block=False,
+    rule=trigger_rule,
 )
-cfg = config.model_validate(get_driver().config.model_dump())
-db = DatabaseHandler(config.db())
-
-
-async def get_name(bot: Bot, group_id: int, id: int) -> str:
-    i = db.get_latest_nickname(group_id, id)
-    if i == None:
-        sender = await asyncio.wait_for(
-            bot.get_group_member_info(group_id=group_id, user_id=id), 3
-        )
-        name = sender["nickname"] if (sender["card"] == None) else sender["card"]
-        db.insert_user_mapping(
-            name, sender["group_id"], sender["user_id"], sender["last_sent_time"]
-        )
-        return name
-    else:
-        if time.time() - i[1] > 86400:
-            try:
-                sender = await asyncio.wait_for(
-                    bot.get_group_member_info(group_id=group_id, user_id=id), 2
-                )
-                name = (
-                    sender["nickname"] if (sender["card"] == None) else sender["card"]
-                )
-                db.insert_user_mapping(
-                    name,
-                    sender["group_id"],
-                    sender["user_id"],
-                    sender["last_sent_time"],
-                )
-                return name
-            except:
-                return i[0]
-        else:
-            return i[0]
-
-
-__time_count = {}
-__random_count = {}
-
-
-def reach_limit(session_id: str) -> bool:
-    global __random_count, __time_count
-    if session_id not in __random_count:
-        __random_count[session_id] = 0
-        __time_count[session_id] = 0
-
-    __random_count[session_id] += 1
-    if int(time.time()) - __time_count[session_id] > 43200:
-        __random_count[session_id] = 1
-        __time_count[session_id] = int(time.time())
-
-    # 判断是否超出限制
-    if __random_count[session_id] > cfg.essence_random_limit:
-        return True
-    elif __random_count[session_id] == 1:
-        __time_count[session_id] = int(time.time())
-
-    return False
 
 
 @essence_set.handle()
 async def _(event: NoticeEvent, bot: Bot):
     if event.notice_type == "essence" and event.model_extra["sub_type"] == "add":
         msg = await bot.get_msg(message_id=event.model_extra["message_id"])
-        if msg["message"][0]["type"] == "text":
-            data = [
-                event.time,
-                event.model_extra["group_id"],
-                event.model_extra["sender_id"],
-                event.model_extra["operator_id"],
-                msg["message"][0]["type"],
-                msg["message"][0]["data"]["text"],
-            ]
-        elif msg["message"][0]["type"] == "image":
-            async with httpx.AsyncClient() as client:
-                r = await client.get(msg["message"][0]["data"]["url"])
-            if r.status_code == 200:
-                base64str = base64.b64encode(r.content).decode("utf-8")
-                data = [
-                    event.time,
-                    event.model_extra["group_id"],
-                    event.model_extra["sender_id"],
-                    event.model_extra["operator_id"],
-                    msg["message"][0]["type"],
-                    f"base64://{base64str}",
-                ]
-            else:
-                essence_set.finish(MessageSegment.text("呜呜"))
+        msg = await format_msg(msg, bot)
+        if msg == None:
+            essence_set.finish(MessageSegment.text("呜呜"))
+        data = [
+            event.time,
+            event.model_extra["group_id"],
+            event.model_extra["sender_id"],
+            event.model_extra["operator_id"],
+            msg[0],
+            msg[1],
+        ]
         db.insert_data(data)
     elif event.notice_type == "essence" and event.model_extra["sub_type"] == "delete":
         msg = await bot.get_msg(message_id=event.model_extra["message_id"])
-        if msg["message"][0]["type"] == "text":
-            data = [
-                event.time,
-                event.model_extra["group_id"],
-                event.model_extra["sender_id"],
-                event.model_extra["operator_id"],
-                msg["message"][0]["type"],
-                msg["message"][0]["data"]["text"],
-            ]
-        elif msg["message"][0]["type"] == "image":
-            async with httpx.AsyncClient() as client:
-                r = await client.get(msg["message"][0]["data"]["url"])
-            if r.status_code == 200:
-                base64str = base64.b64encode(r.content).decode("utf-8")
-                data = [
-                    event.time,
-                    event.model_extra["group_id"],
-                    event.model_extra["sender_id"],
-                    event.model_extra["operator_id"],
-                    msg["message"][0]["type"],
-                    f"base64://{base64str}",
-                ]
-            else:
-                essence_set.finish(MessageSegment.text("呜呜"))
+        msg = await format_msg(msg, bot)
+        if msg == None:
+            essence_set.finish(MessageSegment.text("呜呜"))
+        data = [
+            event.time,
+            event.model_extra["group_id"],
+            event.model_extra["sender_id"],
+            event.model_extra["operator_id"],
+            msg[0],
+            msg[1],
+        ]
         db.insert_del_data(data)
         pass
 
@@ -166,7 +89,10 @@ async def command_main(
                 + "essence help - 显示此帮助信息\n"
                 + "essence random - 随机发送一条精华消息\n"
                 + "essence rank sender - 显示发送者精华消息排行榜\n"
-                + "essence rank operator - 显示管理员设精数量精华消息排行榜"
+                + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
+                + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
+                + "essence fetchall - 获取群内所有精华消息\n"
+                + "essence export - 导出的精华消息\n"
             )
         else:
             if args[0] == "help":
@@ -175,7 +101,10 @@ async def command_main(
                     + "essence help - 显示此帮助信息\n"
                     + "essence random - 随机发送一条精华消息\n"
                     + "essence rank sender - 显示发送者精华消息排行榜\n"
-                    + "essence rank operator - 显示管理员设精数量精华消息排行榜"
+                    + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
+                    + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
+                    + "essence fetchall - 获取群内所有精华消息\n"
+                    + "essence export - 导出的精华消息\n"
                 )
             elif args[0] == "random":
                 if reach_limit(event.get_session_id()):
@@ -209,7 +138,7 @@ async def command_main(
                     if args[1] == "sender":
                         rank = db.sender_rank(event.group_id)
                         result = []
-                        names = await asyncio.gather(
+                        names = await gather(
                             *[get_name(bot, event.group_id, id) for id, _ in rank]
                         )
                         for index, (name, (_, count)) in enumerate(
@@ -224,7 +153,7 @@ async def command_main(
                         result = []
                         for index, (id, count) in enumerate(rank, start=1):
                             result.append(
-                                f"第{index}名: {await get_name(bot, event.group_id,id)}, {count}条精华消息"
+                                f"第{index}名: {await get_name(bot, event.group_id, id)}, {count}条精华消息"
                             )
                         await command_matcher.finish(
                             MessageSegment.text("\n".join(result))
@@ -232,7 +161,7 @@ async def command_main(
 
 
 @admin_command_matcher.handle()
-async def command_main(
+async def admin_command(
     event: MessageEvent,
     bot: Bot,
     args: Message = CommandArg(),
@@ -256,32 +185,17 @@ async def command_main(
                 for essence in essencelist:
                     try:
                         msg = await bot.get_msg(message_id=essence["message_id"])
+                        msg = await format_msg(msg, bot)
+                        data = [
+                            event.time,
+                            event.model_extra["group_id"],
+                            event.model_extra["sender_id"],
+                            event.model_extra["operator_id"],
+                            msg[0],
+                            msg[1],
+                        ]
                     except:
                         continue
-                    if msg["message"][0]["type"] == "text":
-                        data = [
-                            essence["operator_time"],
-                            event.group_id,
-                            essence["sender_id"],
-                            essence["operator_id"],
-                            msg["message"][0]["type"],
-                            msg["message"][0]["data"]["text"],
-                        ]
-                    elif msg["message"][0]["type"] == "image":
-                        async with httpx.AsyncClient() as client:
-                            r = await client.get(msg["message"][0]["data"]["url"])
-                        if r.status_code == 200:
-                            base64str = base64.b64encode(r.content).decode("utf-8")
-                            data = [
-                                essence["operator_time"],
-                                event.group_id,
-                                essence["sender_id"],
-                                essence["operator_id"],
-                                msg["message"][0]["type"],
-                                f"base64://{base64str}",
-                            ]
-                        else:
-                            essence_set.finish(MessageSegment.text("呜呜"))
                     if not db.check_entry_exists(data):
                         db.insert_data(data)
                     pass
@@ -290,24 +204,8 @@ async def command_main(
                 try:
                     await bot.upload_group_file(
                         group_id=event.group_id,
-                        file=f"file://{path}",
+                        file=f"{path}",
                         name="essence.db",
                     )
-                except (ActionFailed, NetworkError) as e:
-                    logger.error(e)
-                    if isinstance(e, ActionFailed):
-                        await bot.send_group_msg(
-                            group_id=event.group_id,
-                            message=Message(MessageSegment.text(str(e))),
-                        )
-                    elif isinstance(e, NetworkError):
-                        await bot.send_group_msg(
-                            group_id=event.group_id,
-                            message=Message(
-                                MessageSegment.text(
-                                    "[ERROR]文件上传失败\r\n[原因]  "
-                                    "上传超时(一般来说还在传,建议等待五分钟)"
-                                )
-                            ),
-                        )
-                # 此功能尚不可用, 上传文件无法成功, 可以联系bot管理员从data/essence_message目录获取数据库
+                except:
+                    pass

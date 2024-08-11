@@ -78,10 +78,14 @@ class DatabaseHandler:
     def random_essence(self, group_id):
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
-                "SELECT * FROM essence_data WHERE group_id = ? ORDER BY RANDOM() LIMIT 1",
+                """SELECT * FROM essence_data 
+                WHERE group_id = ? 
+                AND (message_type = 'text' OR message_type = 'image') 
+                ORDER BY RANDOM() LIMIT 1""",
                 (group_id,),
             )
             return cursor.fetchone()
+
 
     def sender_rank(self, group_id):
         with closing(self._connect()) as conn, conn:
@@ -121,7 +125,7 @@ class DatabaseHandler:
                 """SELECT * FROM essence_data 
                    WHERE group_id = ? 
                    AND message_type = 'text' 
-                   AND LENGTH(message_data) <= 30
+                   AND LENGTH(message_data) <= 100
                    AND message_data LIKE ? ESCAPE '\\' 
                    ORDER BY RANDOM()
                    LIMIT 5""",
@@ -162,13 +166,24 @@ class DatabaseHandler:
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """SELECT nickname, time 
-                   FROM user_mapping 
-                   WHERE group_id = ? AND user_id = ? 
-                   ORDER BY time DESC 
-                   LIMIT 1""",
+                FROM user_mapping 
+                WHERE group_id = ? AND user_id = ? 
+                ORDER BY time DESC 
+                LIMIT 1""",
                 (group_id, user_id),
             )
-            return cursor.fetchone()
+            result = cursor.fetchone()
+            if result:
+                nickname, _ = result
+                current_time = int(time.time())
+                conn.execute(
+                    """UPDATE user_mapping 
+                    SET time = ? 
+                    WHERE group_id = ? AND user_id = ? AND nickname = ?""",
+                    (current_time - 100, group_id, user_id, nickname),
+                )
+                conn.commit()
+            return result
 
     def insert_user_mapping(self, nickname, group_id, user_id, time):
         with closing(self._connect()) as conn, conn:
