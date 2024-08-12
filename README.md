@@ -32,7 +32,7 @@ _✨ 用于整理精华消息 ✨_
 <summary>使用 nb-cli 安装</summary>
 在 nonebot2 项目的根目录下打开命令行, 输入以下指令即可安装
 
-    nb plugin install nonebot-plugin-essence-message
+    nb plugin install nonebot_plugin_essence_message
 
 </details>
 
@@ -43,7 +43,7 @@ _✨ 用于整理精华消息 ✨_
 <details>
 <summary>pip</summary>
 
-    pip install nonebot-plugin-essence-message
+    pip install nonebot_plugin_essence_message
 </details>
 
 打开 nonebot2 项目根目录下的 `pyproject.toml` 文件, 在 `[tool.nonebot]` 部分追加写入
