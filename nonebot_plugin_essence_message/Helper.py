@@ -14,19 +14,25 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent
 db = DatabaseHandler(config.db())
 cfg = config.model_validate(get_driver().config.model_dump())
 
+
 def trigger_rule(event: GroupMessageEvent) -> bool:
-    return event.group_id in cfg.essence_enable_groups or "all" in cfg.essence_enable_groups
+    return (event.group_id in cfg.essence_enable_groups) or (
+        "all" in cfg.essence_enable_groups
+    )
+
 
 async def get_name(bot: Bot, group_id: int, id: int) -> str:
     ti = int(time.time())
-    i = db.get_latest_nickname(group_id, id)
+    i = await db.get_latest_nickname(group_id, id)
     if i == None:
         try:
             sender = await asyncio.wait_for(
                 bot.get_group_member_info(group_id=group_id, user_id=id), 3
             )
             name = sender["nickname"] if (sender["card"] == None) else sender["card"]
-            db.insert_user_mapping(name, sender["group_id"], sender["user_id"], ti)
+            await db.insert_user_mapping(
+                name, sender["group_id"], sender["user_id"], ti
+            )
             return name
         except:
             return "<unknown>"
@@ -39,7 +45,7 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
                 name = (
                     sender["nickname"] if (sender["card"] == None) else sender["card"]
                 )
-                db.insert_user_mapping(
+                await db.insert_user_mapping(
                     name,
                     sender["group_id"],
                     sender["user_id"],
@@ -80,13 +86,13 @@ async def format_msg(msg, bot: Bot):
     result = []
     for msg_part in msg["message"]:
         if msg_part["type"] == "text":
-            re = [msg_part["type"],msg_part["data"]["text"]]
+            re = [msg_part["type"], msg_part["data"]["text"]]
         elif msg_part["type"] == "image":
             async with httpx.AsyncClient() as client:
                 r = await client.get(msg_part["data"]["url"])
             if r.status_code == 200:
                 base64str = base64.b64encode(r.content).decode("utf-8")
-                re = [msg_part["type"],f"base64://{base64str}"]
+                re = [msg_part["type"], f"base64://{base64str}"]
             else:
                 return None
         elif msg_part["type"] == "at":
@@ -95,17 +101,17 @@ async def format_msg(msg, bot: Bot):
             try:
                 remsg = await bot.get_msg(message_id=msg_part["data"]["id"])
                 remsg = await format_msg(remsg, bot)
-                remsg = f'[{remsg[0]},{remsg[1]}]'
+                remsg = f"[{remsg[0]},{remsg[1]}]"
             except:
-                remsg = '[]'
+                remsg = "[]"
             re = [msg_part["type"], remsg]
             pass
         result.append(re)
     if len(result) == 1:
         result = result[0]
     else:
-        remsg = ''
+        remsg = ""
         for re in result:
-            remsg = remsg + f'[{re[0]},{re[1]}],'
-        result = ['group',remsg]
+            remsg = remsg + f"[{re[0]},{re[1]}],"
+        result = ["group", remsg]
     return result
