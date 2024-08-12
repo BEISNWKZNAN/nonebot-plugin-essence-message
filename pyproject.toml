@@ -15,11 +15,6 @@ nonebot-plugin-localstore = "^0.7.1"
 nonebot-plugin-alconna = "^0.51.1"
 aiosqlite = "^0.20.0"
 
-[[tool.poetry.source]]
-name = "mirrors"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
-priority = "primary"
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
