@@ -7,7 +7,6 @@ import time
 class DatabaseHandler:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._create_table()
 
     async def _create_table(self):
         async with aiosqlite.connect(self.db_path) as conn:
@@ -280,7 +279,7 @@ class DatabaseHandler:
                     sender_id,
                     operator_id,
                     message_type,
-                    message_data,
+                    message_data[:50],
                     operator_time - 1000,
                     operator_time + 1000,
                 ),

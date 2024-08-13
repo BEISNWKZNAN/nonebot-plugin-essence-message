@@ -175,7 +175,7 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
             continue
         if not await db.check_entry_exists(data):
             await db.insert_data(data)
-    await essence_cmd.finish(f"成功保存 {savecount}\\{len(essencelist)} 条精华消息\n")
+    await essence_cmd.finish(f"成功保存 {savecount}/{len(essencelist)} 条精华消息")
 
 
 @essence_cmd.dispatch(
