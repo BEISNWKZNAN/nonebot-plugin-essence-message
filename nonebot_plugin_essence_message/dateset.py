@@ -7,6 +7,7 @@ import time
 class DatabaseHandler:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._create_table()
 
     async def _create_table(self):
         async with aiosqlite.connect(self.db_path) as conn:
