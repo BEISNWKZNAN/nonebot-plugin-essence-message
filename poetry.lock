@@ -68,13 +68,13 @@ reference = "mirrors"
 
 [[package]]
 name = "arclet-alconna"
-version = "1.8.26"
+version = "1.8.28"
 description = "A High-performance, Generality, Humane Command Line Arguments Parser Library."
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "arclet_alconna-1.8.26-py3-none-any.whl", hash = "sha256:9726c31947efb2cf6786c4a7962f6824e3b2831bb5c45991f2660adfe3958818"},
-    {file = "arclet_alconna-1.8.26.tar.gz", hash = "sha256:8acbfc5892aea25772105581cc5e69e765ff4947ac53014ec7feeb5991e0a4e1"},
+    {file = "arclet_alconna-1.8.28-py3-none-any.whl", hash = "sha256:e1819e063b2f53b94765d93d269e9e7dbf5c39e275f24d7428374a1e7bf0a654"},
+    {file = "arclet_alconna-1.8.28.tar.gz", hash = "sha256:1cc6c0fe3c04d33c63148d3a606f309de6f79e18861f69e01e1e7f068c852ac9"},
 ]
 
 [package.dependencies]
@@ -234,13 +234,13 @@ reference = "mirrors"
 
 [[package]]
 name = "idna"
-version = "3.7"
+version = "3.8"
 description = "Internationalized Domain Names in Applications (IDNA)"
 optional = false
-python-versions = ">=3.5"
+python-versions = ">=3.6"
 files = [
-    {file = "idna-3.7-py3-none-any.whl", hash = "sha256:82fee1fc78add43492d3a1898bfa6d8a904cc97d8427f683ed8e798d07761aa0"},
-    {file = "idna-3.7.tar.gz", hash = "sha256:028ff3aadf0609c1fd278d8ea3089299412a7a8b9bd005dd08b9f8285bcb5cfc"},
+    {file = "idna-3.8-py3-none-any.whl", hash = "sha256:050b4e5baadcd44d760cedbd2b8e639f2ff89bbc7a5730fcc662954303377aac"},
+    {file = "idna-3.8.tar.gz", hash = "sha256:d838c2c0ed6fced7693d5e8ab8e734d5f8fda53a039c0164afb0b82e771e3603"},
 ]
 
 [package.source]
@@ -250,13 +250,13 @@ reference = "mirrors"
 
 [[package]]
 name = "importlib-metadata"
-version = "8.2.0"
+version = "8.4.0"
 description = "Read metadata from Python packages"
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "importlib_metadata-8.2.0-py3-none-any.whl", hash = "sha256:11901fa0c2f97919b288679932bb64febaeacf289d18ac84dd68cb2e74213369"},
-    {file = "importlib_metadata-8.2.0.tar.gz", hash = "sha256:72e8d4399996132204f9a16dcc751af254a48f8d1b20b9ff0f98d4a8f901e73d"},
+    {file = "importlib_metadata-8.4.0-py3-none-any.whl", hash = "sha256:66f342cc6ac9818fc6ff340576acd24d65ba0b3efabb2b4ac08b598965a4a2f1"},
+    {file = "importlib_metadata-8.4.0.tar.gz", hash = "sha256:9a547d3bc3608b025f93d403fdd1aae741c24fbb8314df4b155675742ce303c5"},
 ]
 
 [package.dependencies]
@@ -578,13 +578,13 @@ reference = "mirrors"
 
 [[package]]
 name = "nonebot2"
-version = "2.3.2"
+version = "2.3.3"
 description = "An asynchronous python bot framework."
 optional = false
 python-versions = ">=3.9,<4.0"
 files = [
-    {file = "nonebot2-2.3.2-py3-none-any.whl", hash = "sha256:c51aa3c1f23d8062ce6d13c8423dcb9a8bf0c44f21687916095f825da79a9a55"},
-    {file = "nonebot2-2.3.2.tar.gz", hash = "sha256:af52e27e03e7fe147f2b642151eec81f264d058efe53b974eb08b5d90177cd14"},
+    {file = "nonebot2-2.3.3-py3-none-any.whl", hash = "sha256:5bc8d073091347f29c4a1a2f927c24a8941e5d286c77139376259318b9bbfc68"},
+    {file = "nonebot2-2.3.3.tar.gz", hash = "sha256:4fa7707de5d708c27cc49493bc78a07fee2ba01f5516835a2ea5fbebb49b9dfa"},
 ]
 
 [package.dependencies]
