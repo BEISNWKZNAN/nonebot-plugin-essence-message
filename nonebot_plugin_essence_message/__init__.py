@@ -48,30 +48,30 @@ essence_cmd = on_alconna(
 
 @essence_set.handle()
 async def _(event: NoticeEvent, bot: Bot):
-    if event.notice_type == "essence" and event.model_extra["sub_type"] == "add":
-        msg = await bot.get_msg(message_id=event.model_extra["message_id"])
+    if event.notice_type == "essence" and event.sub_type == "add":
+        msg = await bot.get_msg(message_id=event.message_id)
         msg = await format_msg(msg, bot)
         if msg == None:
             essence_set.finish(MessageSegment.text("呜呜"))
         data = [
             event.time,
-            event.model_extra["group_id"],
-            event.model_extra["sender_id"],
-            event.model_extra["operator_id"],
+            event.group_id,
+            event.sender_id,
+            event.operator_id,
             msg[0],
             msg[1],
         ]
         await db.insert_data(data)
-    elif event.notice_type == "essence" and event.model_extra["sub_type"] == "delete":
-        msg = await bot.get_msg(message_id=event.model_extra["message_id"])
+    elif event.notice_type == "essence" and event.sub_type == "delete":
+        msg = await bot.get_msg(message_id=event.message_id)
         msg = await format_msg(msg, bot)
         if msg == None:
             essence_set.finish(MessageSegment.text("呜呜"))
         data = [
             event.time,
-            event.model_extra["group_id"],
-            event.model_extra["sender_id"],
-            event.model_extra["operator_id"],
+            event.group_id,
+            event.sender_id,
+            event.operator_id,
             msg[0],
             msg[1],
         ]

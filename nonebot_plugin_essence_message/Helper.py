@@ -6,12 +6,13 @@ import time
 from .dateset import DatabaseHandler
 from .config import config
 
-from nonebot import get_driver, get_plugin_config
+from nonebot import get_plugin_config
 from nonebot.adapters.onebot.v11.bot import Bot
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
 
 db = DatabaseHandler(config.db())
+asyncio.run(db._create_table())
 cfg = get_plugin_config(config)
 
 

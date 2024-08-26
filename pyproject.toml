@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nonebot-plugin-essence-message"
-version = "0.1.9"
+version = "0.2.0"
 description = "Used to organize essence messages"
 license = "MIT"
 authors = ["beis <havaagoodtime@gmail.com>"]
@@ -15,6 +15,9 @@ nonebot-plugin-localstore = "^0.7.1"
 nonebot-plugin-alconna = "^0.51.1"
 aiosqlite = "^0.20.0"
 
+
+[tool.nonebot]
+plugins = []
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
