@@ -92,7 +92,7 @@ async def help_cmd():
         + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
         + "essence fetchall - 获取群内所有精华消息\n"
         + "essence export - 导出精华消息\n"
-        + "essence sevaall - 将群内所有精华消息图片存至本地\n"
+        + "essence saveall - 将群内所有精华消息图片存至本地\n"
         + "essence clean - 删除群里所有精华消息(数据库中保留)"
     )
 
