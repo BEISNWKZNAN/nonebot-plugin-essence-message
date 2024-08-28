@@ -15,7 +15,7 @@ require("nonebot_plugin_alconna")
 from arclet.alconna import Alconna, Args, Subcommand, Option
 from nonebot_plugin_alconna import AlconnaMatch, Match, Query, on_alconna
 
-from .Helper import format_msg, reach_limit, get_name, trigger_rule, db
+from .Helper import fetchpic, format_msg, reach_limit, get_name, trigger_rule, db
 from .config import config
 
 __plugin_meta__ = PluginMetadata(
@@ -40,6 +40,7 @@ essence_cmd = on_alconna(
         Subcommand("cancel"),
         Subcommand("fetchall"),
         Subcommand("export"),
+        Subcommand("saveall"),
         Subcommand("clean"),
     ),
     rule=trigger_rule,
@@ -91,7 +92,8 @@ async def help_cmd():
         + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
         + "essence fetchall - 获取群内所有精华消息\n"
         + "essence export - 导出精华消息\n"
-        + "essence clean - 删除群里使用精华消息(数据库中保留)"
+        + "essence sevaall - 将群内所有精华消息图片存至本地\n"
+        + "essence clean - 删除群里所有精华消息(数据库中保留)"
     )
 
 
@@ -100,6 +102,8 @@ async def random_cmd(event: GroupMessageEvent, bot: Bot):
     if reach_limit(event.get_session_id()):
         await essence_cmd.finish("过量抽精华有害身心健康")
     msg = await db.random_essence(event.group_id)
+    if msg == None:
+        await essence_cmd.finish(MessageSegment.text("目前数据库里没有精华消息，可以使用essence fetchall抓取群里的精华消息"))
     if msg[4] == "text":
         await essence_cmd.finish(
             MessageSegment.text(
@@ -179,6 +183,16 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
             await db.insert_data(data)
     await essence_cmd.finish(f"成功保存 {savecount}/{len(essencelist)} 条精华消息")
     
+
+
+@essence_cmd.dispatch(
+    "saveall",
+    permission=GROUP_ADMIN | GROUP_OWNER,
+).handle()
+async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
+    essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+    savecount = await fetchpic(essencelist)
+    await essence_cmd.finish(f"总共找到 {len(essencelist)} 条精华消息，成功保存 {savecount} 张图片")
 
 @essence_cmd.dispatch(
     "export",

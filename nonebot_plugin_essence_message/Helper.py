@@ -2,6 +2,7 @@ import httpx
 import asyncio
 import base64
 import time
+import os
 
 from .dateset import DatabaseHandler
 from .config import config
@@ -116,3 +117,32 @@ async def format_msg(msg, bot: Bot):
             remsg = remsg + f"[{re[0]},{re[1]}],"
         result = ["group", remsg]
     return result
+
+
+async def fetchpic(essencelist):
+    image_directory =config.img()
+    os.makedirs(image_directory, exist_ok=True)
+    savecount = 0
+    
+    async with httpx.AsyncClient() as client:
+        for essence in essencelist:
+            sender_time = essence['sender_time']
+            sender_nick = essence['sender_nick']
+            for content in essence['content']:
+                if content['type'] == 'image':
+                    image_url = content['data']['url']
+                    response = await client.get(image_url)
+                    if response.status_code == 200:
+                        image_data = response.content
+                        image_filename = f"{sender_time}_{sender_nick}.jpeg"
+                        image_path_count = 1
+                        image_save_path = os.path.join(image_directory, image_filename)
+                        while os.path.exists(image_save_path):
+                            image_filename = f"{sender_time}_{sender_nick}({image_path_count}).jpeg"
+                            image_save_path = os.path.join(image_directory, image_filename)
+                            image_path_count += 1
+                        with open(image_save_path, 'wb') as image_file:
+                            image_file.write(image_data)
+                            savecount += 1
+    
+    return savecount
