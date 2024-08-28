@@ -40,6 +40,7 @@ essence_cmd = on_alconna(
         Subcommand("cancel"),
         Subcommand("fetchall"),
         Subcommand("export"),
+        Subcommand("clean"),
     ),
     rule=trigger_rule,
     priority=5,
@@ -89,7 +90,8 @@ async def help_cmd():
         + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
         + "essence cancel - 在数据库中删除最近取消的一条精华消息\n"
         + "essence fetchall - 获取群内所有精华消息\n"
-        + "essence export - 导出精华消息"
+        + "essence export - 导出精华消息\n"
+        + "essence clean - 删除群里使用精华消息(数据库中保留)"
     )
 
 
@@ -175,8 +177,8 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
             continue
         if not await db.check_entry_exists(data):
             await db.insert_data(data)
-    await essence_cmd.finish(f"成功保存 {savecount}\\{len(essencelist)} 条精华消息")
-
+    await essence_cmd.finish(f"成功保存 {savecount}/{len(essencelist)} 条精华消息")
+    
 
 @essence_cmd.dispatch(
     "export",
@@ -191,3 +193,18 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
         await essence_cmd.finish(f"请检查群文件")
     except:
         pass
+    
+@essence_cmd.dispatch(
+    "clean",
+    permission=GROUP_ADMIN | GROUP_OWNER,
+).handle()
+async def clean_cmd(event: GroupMessageEvent, bot: Bot):
+    essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+    delcount = 0
+    for essence in essencelist:
+        try:
+            await bot.delete_essence_msg(message_id=essence['message_id'])
+            delcount += 1
+        except:
+            continue
+    await essence_cmd.finish(f"成功删除 {delcount}/{len(essencelist)} 条精华消息")
