@@ -51,7 +51,14 @@ essence_cmd = on_alconna(
 @essence_set.handle()
 async def _(event: NoticeEvent, bot: Bot):
     if event.notice_type == "essence" and event.sub_type == "add":
-        msg = await bot.get_msg(message_id=event.message_id)
+        try:
+            msg = await bot.get_msg(message_id=event.message_id)
+        except:
+            essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+            for essence in essencelist:
+                if essence["message_id"] == event.message_id:
+                    msg = {"message": essence["content"]}
+                    break
         msg = await format_msg(msg, bot)
         if msg == None:
             essence_set.finish(MessageSegment.text("呜呜"))
@@ -65,7 +72,14 @@ async def _(event: NoticeEvent, bot: Bot):
         ]
         await db.insert_data(data)
     elif event.notice_type == "essence" and event.sub_type == "delete":
-        msg = await bot.get_msg(message_id=event.message_id)
+        try:
+            msg = await bot.get_msg(message_id=event.message_id)
+        except:
+            essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+            for essence in essencelist:
+                if essence["message_id"] == event.message_id:
+                    msg = {"message": essence["content"]}
+                    break
         msg = await format_msg(msg, bot)
         if msg == None:
             essence_set.finish(MessageSegment.text("呜呜"))
