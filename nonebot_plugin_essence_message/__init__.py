@@ -6,6 +6,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     GroupMessageEvent,
 )
+from nonebot.permission import SUPERUSER
 from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER
 from nonebot.adapters.onebot.v11.bot import Bot
 from nonebot.plugin import PluginMetadata
@@ -159,7 +160,7 @@ async def rank_cmd(
 
 @essence_cmd.dispatch(
     "cancel",
-    permission=GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
 ).handle()
 async def cancel_cmd(event: GroupMessageEvent, bot: Bot):
     del_data = await db.delete_matching_entry(event.group_id)
@@ -173,7 +174,7 @@ async def cancel_cmd(event: GroupMessageEvent, bot: Bot):
 
 @essence_cmd.dispatch(
     "fetchall",
-    permission=GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
 ).handle()
 async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
@@ -201,7 +202,7 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
 
 @essence_cmd.dispatch(
     "saveall",
-    permission=GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
 ).handle()
 async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
@@ -210,7 +211,7 @@ async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
 
 @essence_cmd.dispatch(
     "export",
-    permission=GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
 ).handle()
 async def export_cmd(event: GroupMessageEvent, bot: Bot):
     path = await db.export_group_data(event.group_id)
@@ -224,7 +225,7 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
     
 @essence_cmd.dispatch(
     "clean",
-    permission=GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
 ).handle()
 async def clean_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
