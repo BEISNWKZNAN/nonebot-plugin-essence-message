@@ -31,7 +31,7 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
             sender = await asyncio.wait_for(
                 bot.get_group_member_info(group_id=group_id, user_id=id), 3
             )
-            name = sender["nickname"] if (sender["card"] == None) else sender["card"]
+            name = sender["nickname"] if (sender["card"] == None or sender["card"] == '') else sender["card"]
             await db.insert_user_mapping(
                 name, sender["group_id"], sender["user_id"], ti
             )
@@ -45,7 +45,7 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
                     bot.get_group_member_info(group_id=group_id, user_id=id), 2
                 )
                 name = (
-                    sender["nickname"] if (sender["card"] == None) else sender["card"]
+                    sender["nickname"] if (sender["card"] == None or sender["card"] == '') else sender["card"]
                 )
                 await db.insert_user_mapping(
                     name,
