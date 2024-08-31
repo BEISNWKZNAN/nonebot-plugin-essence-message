@@ -31,7 +31,11 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
             sender = await asyncio.wait_for(
                 bot.get_group_member_info(group_id=group_id, user_id=id), 3
             )
-            name = sender["nickname"] if (sender["card"] == None or sender["card"] == '') else sender["card"]
+            name = (
+                sender["nickname"]
+                if (sender["card"] == None or sender["card"] == "")
+                else sender["card"]
+            )
             await db.insert_user_mapping(
                 name, sender["group_id"], sender["user_id"], ti
             )
@@ -45,7 +49,9 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
                     bot.get_group_member_info(group_id=group_id, user_id=id), 2
                 )
                 name = (
-                    sender["nickname"] if (sender["card"] == None or sender["card"] == '') else sender["card"]
+                    sender["nickname"]
+                    if (sender["card"] == None or sender["card"] == "")
+                    else sender["card"]
                 )
                 await db.insert_user_mapping(
                     name,
@@ -120,17 +126,17 @@ async def format_msg(msg, bot: Bot):
 
 
 async def fetchpic(essencelist):
-    image_directory =config.img()
+    image_directory = config.img()
     os.makedirs(image_directory, exist_ok=True)
     savecount = 0
-    
+
     async with httpx.AsyncClient() as client:
         for essence in essencelist:
-            sender_time = essence['sender_time']
-            sender_nick = essence['sender_nick']
-            for content in essence['content']:
-                if content['type'] == 'image':
-                    image_url = content['data']['url']
+            sender_time = essence["operator_time"]
+            sender_nick = essence["sender_nick"]
+            for content in essence["content"]:
+                if content["type"] == "image":
+                    image_url = content["data"]["url"]
                     response = await client.get(image_url)
                     if response.status_code == 200:
                         image_data = response.content
@@ -138,11 +144,15 @@ async def fetchpic(essencelist):
                         image_path_count = 1
                         image_save_path = os.path.join(image_directory, image_filename)
                         while os.path.exists(image_save_path):
-                            image_filename = f"{sender_time}_{sender_nick}({image_path_count}).jpeg"
-                            image_save_path = os.path.join(image_directory, image_filename)
+                            image_filename = (
+                                f"{sender_time}_{sender_nick}({image_path_count}).jpeg"
+                            )
+                            image_save_path = os.path.join(
+                                image_directory, image_filename
+                            )
                             image_path_count += 1
-                        with open(image_save_path, 'wb') as image_file:
+                        with open(image_save_path, "wb") as image_file:
                             image_file.write(image_data)
                             savecount += 1
-    
+
     return savecount

@@ -38,6 +38,15 @@ essence_cmd = on_alconna(
         Subcommand("random"),
         Subcommand("search", Args["keyword", str]),
         Subcommand("rank", Args["type", str]),
+    ),
+    rule=trigger_rule,
+    priority=5,
+    block=False,
+)
+
+essence_cmd_admin = on_alconna(
+    Alconna(
+        "essence",
         Subcommand("cancel"),
         Subcommand("fetchall"),
         Subcommand("export"),
@@ -45,7 +54,9 @@ essence_cmd = on_alconna(
         Subcommand("clean"),
     ),
     rule=trigger_rule,
-    priority=5,
+    priority=4,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+    block=False,
 )
 
 
@@ -96,7 +107,7 @@ async def _(event: NoticeEvent, bot: Bot):
         pass
 
 
-@essence_cmd.dispatch("help").handle()
+@essence_cmd.assign("help")
 async def help_cmd():
     await essence_cmd.finish(
         "使用说明:\n"
@@ -112,13 +123,17 @@ async def help_cmd():
     )
 
 
-@essence_cmd.dispatch("random").handle()
+@essence_cmd.assign("random")
 async def random_cmd(event: GroupMessageEvent, bot: Bot):
     if reach_limit(event.get_session_id()):
         await essence_cmd.finish("过量抽精华有害身心健康")
     msg = await db.random_essence(event.group_id)
     if msg == None:
-        await essence_cmd.finish(MessageSegment.text("目前数据库里没有精华消息，可以使用essence fetchall抓取群里的精华消息"))
+        await essence_cmd.finish(
+            MessageSegment.text(
+                "目前数据库里没有精华消息，可以使用essence fetchall抓取群里的精华消息"
+            )
+        )
     if msg[4] == "text":
         await essence_cmd.finish(
             MessageSegment.text(
@@ -129,7 +144,7 @@ async def random_cmd(event: GroupMessageEvent, bot: Bot):
         await essence_cmd.finish(MessageSegment.image(file=msg[5]))
 
 
-@essence_cmd.dispatch("search").handle()
+@essence_cmd.assign("search")
 async def search_cmd(
     event: GroupMessageEvent, bot: Bot, keyword: Match[str] = AlconnaMatch("keyword")
 ):
@@ -142,7 +157,7 @@ async def search_cmd(
     await essence_cmd.finish(MessageSegment.text("\n".join(result)))
 
 
-@essence_cmd.dispatch("rank").handle()
+@essence_cmd.assign("rank")
 async def rank_cmd(
     event: GroupMessageEvent, bot: Bot, type: Query[str] = Query("~type")
 ):
@@ -158,10 +173,9 @@ async def rank_cmd(
     await essence_cmd.finish(MessageSegment.text("\n".join(result)))
 
 
-@essence_cmd.dispatch(
+@essence_cmd_admin.assign(
     "cancel",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-).handle()
+)
 async def cancel_cmd(event: GroupMessageEvent, bot: Bot):
     del_data = await db.delete_matching_entry(event.group_id)
     if del_data is None:
@@ -172,10 +186,7 @@ async def cancel_cmd(event: GroupMessageEvent, bot: Bot):
         )
 
 
-@essence_cmd.dispatch(
-    "fetchall",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-).handle()
+@essence_cmd_admin.assign("fetchall")
 async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
     savecount = 0
@@ -197,22 +208,20 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
         if not await db.check_entry_exists(data):
             await db.insert_data(data)
     await essence_cmd.finish(f"成功保存 {savecount}/{len(essencelist)} 条精华消息")
-    
 
 
-@essence_cmd.dispatch(
+@essence_cmd_admin.assign(
     "saveall",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-).handle()
+)
 async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
     savecount = await fetchpic(essencelist)
-    await essence_cmd.finish(f"总共找到 {len(essencelist)} 条精华消息，成功保存 {savecount} 张图片")
+    await essence_cmd.finish(
+        f"总共找到 {len(essencelist)} 条精华消息，成功保存 {savecount} 张图片"
+    )
 
-@essence_cmd.dispatch(
-    "export",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-).handle()
+
+@essence_cmd_admin.assign("export")
 async def export_cmd(event: GroupMessageEvent, bot: Bot):
     path = await db.export_group_data(event.group_id)
     try:
@@ -222,17 +231,15 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
         await essence_cmd.finish(f"请检查群文件")
     except:
         pass
-    
-@essence_cmd.dispatch(
-    "clean",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-).handle()
+
+
+@essence_cmd_admin.assign("clean")
 async def clean_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
     delcount = 0
     for essence in essencelist:
         try:
-            await bot.delete_essence_msg(message_id=essence['message_id'])
+            await bot.delete_essence_msg(message_id=essence["message_id"])
             delcount += 1
         except:
             continue
