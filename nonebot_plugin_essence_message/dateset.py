@@ -175,16 +175,6 @@ class DatabaseHandler:
                 (group_id, user_id),
             )
             result = await cursor.fetchone()
-            if result:
-                nickname, _ = result
-                current_time = int(time.time())
-                await conn.execute(
-                    """UPDATE user_mapping 
-                       SET time = ? 
-                       WHERE group_id = ? AND user_id = ? AND nickname = ?""",
-                    (current_time - 100, group_id, user_id, nickname),
-                )
-                await conn.commit()
             return result
 
     async def insert_user_mapping(self, nickname, group_id, user_id, time):

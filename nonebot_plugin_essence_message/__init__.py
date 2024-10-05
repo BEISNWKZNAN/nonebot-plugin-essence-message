@@ -16,7 +16,7 @@ require("nonebot_plugin_alconna")
 from arclet.alconna import Alconna, Args, Subcommand, Option
 from nonebot_plugin_alconna import AlconnaMatch, Match, Query, on_alconna
 
-from .Helper import fetchpic, format_msg, reach_limit, get_name, trigger_rule, db
+from .Helper import fetchpic, format_msg, reach_limit, get_name, trigger_rule, good_essence,add_good_count,del_good_count, db
 from .config import config
 
 __plugin_meta__ = PluginMetadata(
@@ -59,6 +59,44 @@ essence_cmd_admin = on_alconna(
     block=False,
 )
 
+trigood = on_type((NoticeEvent,), priority=11,block=False)
+
+@trigood.handle()
+async def __(event: NoticeEvent, bot: Bot):
+    if event.notice_type == 'reaction':
+        if event.sub_type == "add":
+            if event.code == '76':
+                add_good_count(f'{event.group_id}_{event.message_id}')
+                if good_essence(f'{event.group_id}_{event.message_id}'):
+                    await bot.set_essence_msg(message_id=event.message_id)
+        elif event.sub_type == 'remove':
+            if event.code == '76':
+                del_good_count(f'{event.group_id}_{event.message_id}')
+                if not good_essence(f'{event.group_id}_{event.message_id}'):
+                    try:
+                        msg = await bot.get_msg(message_id=event.message_id)
+                        sender = msg['sender']['user_id']
+                    except:
+                        essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+                        for essence in essencelist:
+                            if essence["message_id"] == event.message_id:
+                                msg = {"message": essence["content"]}
+                                break
+                    msg = await format_msg(msg, bot)
+                    if msg == None:
+                        essence_set.finish(MessageSegment.text("呜呜"))
+                    data = [
+                        event.time,
+                        event.group_id,
+                        sender,
+                        bot.self_id,
+                        msg[0],
+                        msg[1],
+                    ]
+                    if await db.check_entry_exists(data):
+                        await bot.delete_essence_msg(message_id=event.message_id)
+                        del_data = await db.delete_matching_entry(event.group_id)
+                        pass
 
 @essence_set.handle()
 async def _(event: NoticeEvent, bot: Bot):
@@ -221,7 +259,9 @@ async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
     )
 
 
-@essence_cmd_admin.assign("export")
+@essence_cmd_admin.assign(
+    "export",
+)
 async def export_cmd(event: GroupMessageEvent, bot: Bot):
     path = await db.export_group_data(event.group_id)
     try:
@@ -233,7 +273,9 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
         pass
 
 
-@essence_cmd_admin.assign("clean")
+@essence_cmd_admin.assign(
+    "clean",
+)
 async def clean_cmd(event: GroupMessageEvent, bot: Bot):
     essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
     delcount = 0
@@ -241,6 +283,6 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
         try:
             await bot.delete_essence_msg(message_id=essence["message_id"])
             delcount += 1
-        except:
+        except Exception as e:
             continue
     await essence_cmd.finish(f"成功删除 {delcount}/{len(essencelist)} 条精华消息")

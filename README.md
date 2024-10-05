@@ -60,7 +60,8 @@ _✨ 用于整理精华消息 ✨_
 |:-------------------:|:----:|:------:|:----:|
 | essence_random_limit | 否   | 5      | `essence random` 指令的使用次数上限。 |
 | essence_enable_groups| 否   | all    | 启用群号列表，默认为 `all` 表示所有群都启用。 |
-
+| good_essence_rule| 否   | False    | 是否启用n赞加精功能,此功能会对Reaction的点赞数超过good_bound的消息自动加精,使得每个群友都有设精权 |
+| good_bound| 否   | 3    | 如上 |
 ## 🎉 使用
 ### 指令表
 | 指令 | 权限 | 需要@ | 范围 | 说明 |

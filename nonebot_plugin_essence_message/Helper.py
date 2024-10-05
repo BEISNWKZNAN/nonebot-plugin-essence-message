@@ -3,6 +3,7 @@ import asyncio
 import base64
 import time
 import os
+import json
 
 from .dateset import DatabaseHandler
 from .config import config
@@ -22,9 +23,39 @@ def trigger_rule(event: GroupMessageEvent) -> bool:
         "all" in cfg.essence_enable_groups
     )
 
+good_cache = config.cache() / 'good_cache.json'
+if good_cache.exists():  
+    with good_cache.open('r', encoding='utf-8') as f:  
+        __good_count = json.load(f)  
+else:
+    __good_count = {}
+
+def good_essence(message_id: str) -> int:
+    global __good_count
+    with open(good_cache, 'w', encoding='utf-8') as f:  
+        json.dump(__good_count, f, ensure_ascii=False, indent=4)  
+    return __good_count[message_id] >= cfg.good_bound
+
+def add_good_count(message_id: str) -> int:
+    global __good_count
+    if message_id in __good_count:
+        __good_count[message_id] += 1
+    else:
+        __good_count[message_id] = 1
+    return __good_count[message_id]
+
+def del_good_count(message_id: str) -> int:
+    global __good_count
+    if message_id in __good_count:
+        __good_count[message_id] -= 1
+    else:
+        __good_count[message_id] = 0
+    if __good_count[message_id] < 0:
+        __good_count[message_id] = 0
+    return __good_count[message_id]
 
 async def get_name(bot: Bot, group_id: int, id: int) -> str:
-    ti = int(time.time())
+    ti = time.time()
     i = await db.get_latest_nickname(group_id, id)
     if i == None:
         try:
@@ -37,16 +68,19 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
                 else sender["card"]
             )
             await db.insert_user_mapping(
-                name, sender["group_id"], sender["user_id"], ti
+                name, sender["group_id"], sender["user_id"], int(ti)
             )
             return name
         except:
             return "<unknown>"
     else:
-        if ti - i[1] > 86400:
+        if ti % 10 <= 1:
             try:
                 sender = await asyncio.wait_for(
-                    bot.get_group_member_info(group_id=group_id, user_id=id), 2
+                    bot.get_group_member_info(
+                        group_id=group_id, user_id=id, no_cache=True
+                    ),
+                    2,
                 )
                 name = (
                     sender["nickname"]
@@ -57,7 +91,7 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
                     name,
                     sender["group_id"],
                     sender["user_id"],
-                    ti,
+                    int(ti),
                 )
                 return name
             except:
@@ -68,7 +102,6 @@ async def get_name(bot: Bot, group_id: int, id: int) -> str:
 
 __time_count = {}
 __random_count = {}
-
 
 def reach_limit(session_id: str) -> bool:
     global __random_count, __time_count
