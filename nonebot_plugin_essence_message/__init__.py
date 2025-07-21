@@ -1,4 +1,4 @@
-from asyncio import gather
+from asyncio import gather, Lock
 from typing import Union
 
 from nonebot import get_plugin_config, on_notice, on_type
@@ -78,6 +78,9 @@ db = DatabaseHandler(str(cfg.db()))
 goodcount = GoodCounter(cfg.cache() / "good_cache.json", cfg.good_bound)
 ratelimiter = RateLimiter(cfg.essence_random_limit, 43200, cfg.essence_random_cooldown)
 
+fetchall_running: set[int] = set()
+clean_running: set[int] = set()
+ban_lock = Lock()
 
 whale_essnece = on_notice(
     rule=whale_essnece_rule,
@@ -109,13 +112,13 @@ essence_cmd_admin = on_alconna(
         Subcommand("export"),
         Subcommand("saveall"),
         Subcommand("clean"),
+        Subcommand("migrate", Args["group_id", int]),
     ),
     rule=essence_enable_rule,
     priority=6,
     permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
     block=False,
 )
-cleanning_flag = False
 
 
 # 10024
@@ -193,8 +196,8 @@ async def ___(event: NoticeEvent, bot: Bot):
             db, msg, bot, event.time, event.group_id, event.sender_id, event.operator_id
         ).add_to_dataset()
     elif event.sub_type == "delete":
-        global cleanning_flag
-        if cleanning_flag:
+        global clean_running
+        if event.group_id in clean_running:
             await essence_cmd.finish()
         await SaveMsg(
             db, msg, bot, event.time, event.group_id, event.sender_id, event.operator_id
@@ -306,6 +309,8 @@ async def help_cmd():
         + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
         + "essence fetchall - 获取群内所有精华消息\n"
         + "essence export - 导出精华消息\n"
+        + "essence search <str> - 根据关键词搜索精华消息"
+        + "essence migrate <int> - 把上一个群的精华消息迁移到本群<int>为上一个群群号"
         + "essence saveall - 将群内所有精华消息图片存至本地\n"
         + "essence clean - 删除群里所有精华消息(数据库中保留)"
     )
@@ -368,22 +373,40 @@ async def rank_cmd(
 
 @essence_cmd_admin.assign("fetchall")
 async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
-    essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
-    savecount = 0
-    for essence in essencelist:
-        msg = {"message": essence["content"]}
-        savecount += int(
-            await SaveMsg(
-                db,
-                msg,
-                bot,
-                event.time,
-                event.group_id,
-                essence["sender_id"],
-                essence["operator_id"],
-            ).add_to_dataset()
+    global fetchall_running
+    async with ban_lock:
+        if event.group_id in fetchall_running:
+            frist = False
+            await essence_cmd.finish("fetchall正在运行")
+        else:
+            fetchall_running.add(event.group_id)
+            frist = True
+    if frist:
+        try:
+            essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+            savecount = 0
+            for essence in essencelist:
+                msg = {"message": essence["content"]}
+                savecount += int(
+                    await SaveMsg(
+                        db,
+                        msg,
+                        bot,
+                        event.time,
+                        event.group_id,
+                        essence["sender_id"],
+                        essence["operator_id"],
+                    ).add_to_dataset()
+                )
+        except Exception as e:
+            async with ban_lock:
+                fetchall_running.remove(event.group_id)
+            await essence_cmd.finish(f"fetchall过程中出错{e}")
+        async with ban_lock:
+            fetchall_running.remove(event.group_id)
+        await essence_cmd.finish(
+            f"成功保存 {savecount}/{len(essencelist)} 条精华消息"
         )
-    await essence_cmd.finish(f"成功保存 {savecount}/{len(essencelist)} 条精华消息")
 
 
 @essence_cmd_admin.assign(
@@ -413,31 +436,57 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
     "clean",
 )
 async def clean_cmd(event: GroupMessageEvent, bot: Bot):
-    global cleanning_flag
-    essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
-    await essence_cmd.send("开始抓取目前精华消息")
-    savecount = 0
-    for essence in essencelist:
-        msg = {"message": essence["content"]}
-        savecount += int(
-            await SaveMsg(
-                db,
-                msg,
-                bot,
-                event.time,
-                event.group_id,
-                essence["sender_id"],
-                essence["operator_id"],
-            ).add_to_dataset()
-        )
-    await essence_cmd.send("开始清理")
-    cleanning_flag = True
-    delcount = 0
-    for essence in essencelist:
+    global clean_running
+    async with ban_lock:
+        if event.group_id in clean_running:
+            frist = False
+            await essence_cmd.finish("claen正在运行")
+        else:
+            clean_running.add(event.group_id)
+            frist = True
+    if frist:
         try:
-            await bot.delete_essence_msg(message_id=essence["message_id"])
-            delcount += 1
-        except Exception:
-            continue
-    cleanning_flag = False
-    await essence_cmd.finish(f"成功删除 {delcount}/{len(essencelist)} 条精华消息")
+            essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
+            await essence_cmd.send("开始抓取目前精华消息")
+            savecount = 0
+            for essence in essencelist:
+                msg = {"message": essence["content"]}
+                savecount += int(
+                    await SaveMsg(
+                        db,
+                        msg,
+                        bot,
+                        event.time,
+                        event.group_id,
+                        essence["sender_id"],
+                        essence["operator_id"],
+                    ).add_to_dataset()
+                )
+            await essence_cmd.send("开始清理")
+            delcount = 0
+            for essence in essencelist:
+                try:
+                    await bot.delete_essence_msg(message_id=essence["message_id"])
+                    delcount += 1
+                except Exception as e:
+                    continue
+        except Exception as e:
+            async with ban_lock:
+                clean_running.remove(event.group_id)
+            await essence_cmd.finish(f"clean过程中出错{e}")
+        async with ban_lock:
+            clean_running.remove(event.group_id)
+        await essence_cmd.finish(
+            f"成功删除 {delcount}/{len(essencelist)} 条精华消息"
+        )
+
+
+@essence_cmd_admin.assign(
+    "migrate",
+)
+async def migrate_cmd(
+    event: GroupMessageEvent, bot: Bot, groupid: Match[int] = AlconnaMatch("group_id")
+):
+    group_id = groupid.result
+    essence_updated_count, _ = await db.migrate_group_data(group_id, event.group_id)
+    await essence_cmd.finish(f"成功迁移{essence_updated_count}条精华消息")
