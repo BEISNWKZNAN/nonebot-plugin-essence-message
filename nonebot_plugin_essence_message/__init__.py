@@ -309,8 +309,8 @@ async def help_cmd():
         + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
         + "essence fetchall - 获取群内所有精华消息\n"
         + "essence export - 导出精华消息\n"
-        + "essence search <str> - 根据关键词搜索精华消息"
-        + "essence migrate <int> - 把上一个群的精华消息迁移到本群<int>为上一个群群号"
+        + "essence search <str> - 根据关键词搜索精华消息\n"
+        + "essence migrate <int> - 把上一个群的精华消息迁移到本群<int>为上一个群群号\n"
         + "essence saveall - 将群内所有精华消息图片存至本地\n"
         + "essence clean - 删除群里所有精华消息(数据库中保留)"
     )
