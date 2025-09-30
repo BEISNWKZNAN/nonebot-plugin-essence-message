@@ -112,6 +112,7 @@ essence_cmd_admin = on_alconna(
         Subcommand("export"),
         Subcommand("saveall"),
         Subcommand("clean"),
+        Subcommand("switch"),
         Subcommand("migrate", Args["group_id", int]),
     ),
     rule=essence_enable_rule,
@@ -312,6 +313,7 @@ async def help_cmd():
         + "essence search <str> - 根据关键词搜索精华消息\n"
         + "essence migrate <int> - 把上一个群的精华消息迁移到本群<int>为上一个群群号\n"
         + "essence saveall - 将群内所有精华消息图片存至本地\n"
+        + "essence switch - 更改数据库和和群聊的跟随状态\n"
         + "essence clean - 删除群里所有精华消息(数据库中保留)"
     )
 
@@ -386,18 +388,21 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
             essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
             savecount = 0
             for essence in essencelist:
-                msg = {"message": essence["content"]}
-                savecount += int(
-                    await SaveMsg(
-                        db,
-                        msg,
-                        bot,
-                        event.time,
-                        event.group_id,
-                        essence["sender_id"],
-                        essence["operator_id"],
-                    ).add_to_dataset()
-                )
+                try:
+                    msg = {"message": essence["content"]}
+                    savecount += int(
+                        await SaveMsg(
+                            db,
+                            msg,
+                            bot,
+                            event.time,
+                            event.group_id,
+                            essence["sender_id"],
+                            essence["operator_id"],
+                        ).add_to_dataset()
+                    )
+                except:
+                    continue
         except Exception as e:
             async with ban_lock:
                 fetchall_running.remove(event.group_id)
@@ -450,18 +455,21 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
             await essence_cmd.send("开始抓取目前精华消息")
             savecount = 0
             for essence in essencelist:
-                msg = {"message": essence["content"]}
-                savecount += int(
-                    await SaveMsg(
-                        db,
-                        msg,
-                        bot,
-                        event.time,
-                        event.group_id,
-                        essence["sender_id"],
-                        essence["operator_id"],
-                    ).add_to_dataset()
-                )
+                try:
+                    msg = {"message": essence["content"]}
+                    savecount += int(
+                        await SaveMsg(
+                            db,
+                            msg,
+                            bot,
+                            event.time,
+                            event.group_id,
+                            essence["sender_id"],
+                            essence["operator_id"],
+                        ).add_to_dataset()
+                    )
+                except:
+                    continue
             await essence_cmd.send("开始清理")
             delcount = 0
             for essence in essencelist:
@@ -490,3 +498,15 @@ async def migrate_cmd(
     group_id = groupid.result
     essence_updated_count, _ = await db.migrate_group_data(group_id, event.group_id)
     await essence_cmd.finish(f"成功迁移{essence_updated_count}条精华消息")
+
+
+@essence_cmd_admin.assign(
+    "switch",
+)
+async def switch_cmd(event: GroupMessageEvent, bot: Bot):
+    if event.group_id in clean_running:
+        clean_running.remove(event.group_id)
+        await essence_cmd.finish("现在删除群内精华会在数据库同步删除")
+    else:
+        clean_running.add(event.group_id)
+        await essence_cmd.finish("现在删除群内精华不会在数据库同步删除")
