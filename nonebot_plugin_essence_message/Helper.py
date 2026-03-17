@@ -11,13 +11,14 @@ from nonebot.adapters.onebot.v11.message import Message
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union, cast
 from nonebot.adapters.onebot.v11 import MessageSegment
 from nonebot.permission import Permission
+from pydantic import BaseModel
 
 from .dataset import DatabaseHandler
 
 
 async def _notice_permission(event: NoticeEvent, bot: "Bot") -> bool:
     try:
-        user_id = event.operator_id  # type: ignore
+        user_id = event.user_id  # type: ignore
         member_info = await bot.get_group_member_info(group_id=event.group_id, user_id=user_id)  # type: ignore
     except Exception:
         return False
@@ -37,8 +38,8 @@ async def whale_essnece_set(
     enable_whale: bool, group_id: int, message_id: int, is_add: bool, bot: "Bot"
 ):
     if enable_whale:
-        await bot.set_group_reaction(
-            group_id=group_id, message_id=message_id, code="128051", is_add=is_add
+        await bot.set_msg_emoji_like(
+            message_id=message_id, emoji_id="128051", set=is_add
         )
     else:
         if is_add:
@@ -47,22 +48,56 @@ async def whale_essnece_set(
             await bot.delete_essence_msg(message_id=message_id)
 
 
+class GoodEmojiLike(BaseModel):
+    emoji_id: Literal["76"]
+    count: int
+
+
+class WhaleEmojiLike(BaseModel):
+    emoji_id: Literal["128051"]
+    count: int
+
+
 class ReactGoodNoticeEvent(NoticeEvent):
     message_id: int
     group_id: int
-    notice_type: Literal["reaction"]
-    sub_type: Union[Literal["add"], Literal["remove"]]
-    code: Literal["76"]
-    count: Optional[int] = None  # 可选参数，默认值为 None
+    user_id: int
+    notice_type: Literal["group_msg_emoji_like"]
+    is_add: bool
+    likes: List[GoodEmojiLike]
+
+    @property
+    def sub_type(self) -> str:
+        return "add" if self.is_add else "remove"
+
+    @property
+    def code(self) -> str:
+        return self.likes[0].emoji_id if self.likes else "76"
+
+    @property
+    def count(self) -> int:
+        return self.likes[0].count if self.likes else 0
 
 
 class ReactWhaleNoticeEvent(NoticeEvent):
     message_id: int
-    operator_id: int
+    user_id: int
     group_id: int
-    notice_type: Literal["reaction"]
-    sub_type: Union[Literal["add"], Literal["remove"]]
-    code: Literal["128051"]
+    notice_type: Literal["group_msg_emoji_like"]
+    is_add: bool
+    likes: List[WhaleEmojiLike]
+
+    @property
+    def operator_id(self) -> int:
+        return self.user_id
+
+    @property
+    def sub_type(self) -> str:
+        return "add" if self.is_add else "remove"
+
+    @property
+    def code(self) -> str:
+        return self.likes[0].emoji_id if self.likes else "128051"
 
 
 class EssenceEvent(NoticeEvent):
@@ -70,7 +105,7 @@ class EssenceEvent(NoticeEvent):
     notice_type: Literal["essence"]
     sub_type: Union[Literal["add"], Literal["delete"]]
     sender_id: int
-    message_id: int
+    message_id: Optional[int] = None
     operator_id: int
 
 
