@@ -1,7 +1,7 @@
 from asyncio import gather, Lock
 from typing import Union
 
-from nonebot import get_driver, get_plugin_config, on_notice
+from nonebot import get_driver, get_logger, get_plugin_config, on_notice
 from nonebot.adapters.onebot.v11 import (
     NoticeEvent,
     MessageSegment,
@@ -27,12 +27,12 @@ from .Helper import (
     SaveMsg,
     RateLimiter,
     SendMsg,
-    SendMsgData,
     NoticePermission,
     get_name,
     fetchpic,
     whale_essnece_set,
 )
+from .msg import Msg
 
 __plugin_meta__ = PluginMetadata(
     name="精华消息管理",
@@ -85,7 +85,12 @@ ban_lock = Lock()
 
 @get_driver().on_startup
 async def _initialize_database() -> None:
-    await db.initialize()
+    migrated_rows, migrated_images = await db.initialize()
+    get_logger().info(
+        "精华消息数据库迁移完成：转换 {} 条记录，提取 {} 张图片",
+        migrated_rows,
+        migrated_images,
+    )
 
 whale_essnece = on_notice(
     rule=whale_essnece_rule,
@@ -338,7 +343,7 @@ async def random_cmd(event: GroupMessageEvent, bot: Bot):
                 )
             )
         else:
-            rand = SendMsg(SendMsgData(msg[4], msg[5]), db, bot, msg[1])
+            rand = SendMsg(Msg.from_database(msg[4], msg[5]), db, bot, msg[1])
             random = (
                 MessageSegment.text(f"{await rand.get_name(msg[2])}:")
                 + await rand.get_msg()

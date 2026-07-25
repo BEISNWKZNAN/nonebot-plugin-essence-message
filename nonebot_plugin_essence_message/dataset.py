@@ -3,7 +3,10 @@ import random
 import aiosqlite
 import os
 from datetime import datetime
+from pathlib import Path
 import time
+
+from .msg import Msg
 
 
 class DatabaseHandler:
@@ -11,8 +14,9 @@ class DatabaseHandler:
     def _content_hash(message_data: str) -> str:
         return hashlib.sha256(message_data.encode("utf-8")).hexdigest()
 
-    async def initialize(self) -> None:
+    async def initialize(self) -> tuple[int, int]:
         """Create and migrate the database without blocking the running event loop."""
+        migrated_image_count = 0
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA synchronous=NORMAL;")
@@ -34,16 +38,33 @@ class DatabaseHandler:
                 await conn.execute("ALTER TABLE essence_data ADD COLUMN content_hash TEXT")
 
             cursor = await conn.execute(
-                "SELECT rowid, message_data FROM essence_data WHERE content_hash IS NULL"
+                """SELECT rowid, message_type, message_data, content_hash
+                   FROM essence_data"""
             )
-            rows_without_hash = await cursor.fetchall()
-            if rows_without_hash:
+            migrated_rows = []
+            database_dir = Path(self.db_path).parent
+            image_dir = database_dir / "img"
+            for rowid, message_type, message_data, old_hash in await cursor.fetchall():
+                message = Msg.from_database(message_type, message_data)
+                migrated_images = message.migrate_images(image_dir, database_dir)
+                migrated_image_count += migrated_images
+                serialized = message.serialize()
+                content_hash = self._content_hash(serialized)
+                if (
+                    message_type != message.type
+                    or serialized != message_data
+                    or content_hash != old_hash
+                    or migrated_images
+                ):
+                    migrated_rows.append(
+                        (message.type, serialized, content_hash, rowid)
+                    )
+            if migrated_rows:
                 await conn.executemany(
-                    "UPDATE essence_data SET content_hash = ? WHERE rowid = ?",
-                    [
-                        (self._content_hash(message_data), rowid)
-                        for rowid, message_data in rows_without_hash
-                    ],
+                    """UPDATE essence_data
+                       SET message_type = ?, message_data = ?, content_hash = ?
+                       WHERE rowid = ?""",
+                    migrated_rows,
                 )
             await conn.execute("DROP INDEX IF EXISTS idx_essence_exists")
             await conn.execute(
@@ -88,8 +109,10 @@ class DatabaseHandler:
                 ON user_mapping (nickname, group_id, user_id)
                 """
             )
+            await conn.execute("PRAGMA user_version = 2")
 
             await conn.commit()
+        return len(migrated_rows), migrated_image_count
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -300,22 +323,24 @@ class DatabaseHandler:
         return final_results
 
     async def search_entries(self, group_id, keyword):
-        keyword_escaped = keyword.replace("%", r"\%").replace("_", r"\_")
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             cursor = await conn.execute(
                 """SELECT time, group_id, sender_id, operator_id,
                           message_type, message_data
                 FROM essence_data
-                WHERE group_id = ? 
-                AND message_type = 'text' 
-                AND LENGTH(message_data) <= 100 
-                AND message_data LIKE ? ESCAPE '\\' 
-                ORDER BY RANDOM() 
-                LIMIT 5""",
-                (group_id, f"%{keyword_escaped}%"),
+                WHERE group_id = ?""",
+                (group_id,),
             )
-            return await cursor.fetchall()
+            matched = []
+            for row in await cursor.fetchall():
+                try:
+                    text = Msg.deserialize(row[5]).text_content()
+                except (TypeError, ValueError):
+                    continue
+                if len(text) <= 100 and keyword in text:
+                    matched.append((*row[:5], text))
+            return random.sample(matched, min(5, len(matched)))
 
     async def export_group_data(self, group_id):
         export_db_path = os.path.join(
