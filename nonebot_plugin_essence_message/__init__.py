@@ -1,13 +1,15 @@
 from asyncio import gather, Lock
 from typing import Union
 
-from nonebot import get_driver, get_logger, get_plugin_config, on_notice
+from nonebot import get_driver, get_plugin_config, on_notice
 from nonebot.adapters.onebot.v11 import (
     NoticeEvent,
     MessageSegment,
     GroupMessageEvent,
 )
+from nonebot.adapters.onebot.v11.message import Message
 from nonebot.permission import SUPERUSER
+from nonebot.log import logger
 from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER
 from nonebot.adapters.onebot.v11.bot import Bot
 from nonebot.plugin import PluginMetadata
@@ -29,7 +31,6 @@ from .Helper import (
     SendMsg,
     NoticePermission,
     get_name,
-    fetchpic,
     whale_essnece_set,
 )
 from .msg import Msg
@@ -46,7 +47,15 @@ __plugin_meta__ = PluginMetadata(
 
 
 def essence_enable_rule(event: Union[GroupMessageEvent, NoticeEvent]) -> bool:
-    return (int(event.group_id) in cfg.essence_enable_groups) or (str(event.group_id) in cfg.essence_enable_groups) or ("all" in cfg.essence_enable_groups)  # type: ignore
+    return cfg.essence_pool(int(event.group_id)) is not None  # type: ignore
+
+
+def good_essence_enabled(group_id: int) -> bool:
+    return cfg.pool_feature_enabled(group_id, cfg.good_essence_enable_groups)
+
+
+def whale_essence_enabled(group_id: int) -> bool:
+    return cfg.pool_feature_enabled(group_id, cfg.whale_essnece_enable_groups)
 
 
 def whale_essnece_rule(event: NoticeEvent):
@@ -85,8 +94,28 @@ ban_lock = Lock()
 
 @get_driver().on_startup
 async def _initialize_database() -> None:
-    migrated_rows, migrated_images = await db.initialize()
-    get_logger().info(
+    last_logged_percent = -10
+    rebuilding = False
+
+    def report_progress(completed: int, total: int) -> None:
+        nonlocal last_logged_percent, rebuilding
+        rebuilding = True
+        percent = 100 if total == 0 else completed * 100 // total
+        if percent >= last_logged_percent + 10 or completed == total:
+            logger.info(
+                "精华消息数据库重建进度：{}/{}（{}%）",
+                completed,
+                total,
+                percent,
+            )
+            last_logged_percent = percent
+
+    migrated_rows, migrated_images, backup_path = await db.initialize(report_progress)
+    if not rebuilding:
+        return
+    if backup_path is not None:
+        logger.info("重建前数据库备份已保存至：{}", backup_path)
+    logger.info(
         "精华消息数据库迁移完成：转换 {} 条记录，提取 {} 张图片",
         migrated_rows,
         migrated_images,
@@ -117,13 +146,10 @@ essence_cmd = on_alconna(
 essence_cmd_admin = on_alconna(
     Alconna(
         "essence",
-        Subcommand("cancel"),
         Subcommand("fetchall"),
         Subcommand("export"),
-        Subcommand("saveall"),
         Subcommand("clean"),
         Subcommand("switch"),
-        Subcommand("migrate", Args["group_id", int]),
     ),
     rule=essence_enable_rule,
     priority=6,
@@ -139,14 +165,15 @@ async def _(event: NoticeEvent, bot: Bot):
         event = ReactWhaleNoticeEvent(**event.model_dump())
     except:
         await whale_essnece.finish()
-    if (
-        int(event.group_id) in cfg.whale_essnece_enable_groups
-        or str(event.group_id) in cfg.whale_essnece_enable_groups
-    ):
+    if whale_essence_enabled(event.group_id):
         if event.sub_type == "add":
+            msg = None
             try:
                 msg = await bot.get_msg(message_id=event.message_id)
-            except:
+            except Exception:
+                pass
+            if msg is None:
+                logger.warning("无法获取精华消息，跳过保存：group_id={}", event.group_id)
                 await whale_essnece.finish()
             await SaveMsg(
                 db,
@@ -157,16 +184,19 @@ async def _(event: NoticeEvent, bot: Bot):
                 msg["sender"]["user_id"],
                 event.operator_id,
             ).add_to_dataset()
-            await bot.set_group_reaction(
-                group_id=event.group_id,
+            await bot.set_msg_emoji_like(
                 message_id=event.message_id,
-                code="10024",
-                is_add=True,
+                emoji_id="10024",
+                set=True,
             )
         else:
+            msg = None
             try:
                 msg = await bot.get_msg(message_id=event.message_id)
-            except:
+            except Exception:
+                pass
+            if msg is None:
+                logger.warning("无法获取精华消息，跳过删除：group_id={}", event.group_id)
                 await whale_essnece.finish()
             await SaveMsg(
                 db,
@@ -177,11 +207,10 @@ async def _(event: NoticeEvent, bot: Bot):
                 msg["sender"]["user_id"],
                 event.operator_id,
             ).del_from_dataset()
-            await bot.set_group_reaction(
-                group_id=event.group_id,
+            await bot.set_msg_emoji_like(
                 message_id=event.message_id,
-                code="10024",
-                is_add=False,
+                emoji_id="10024",
+                set=False,
             )
     else:
         await whale_essnece.finish()
@@ -193,15 +222,28 @@ async def ___(event: NoticeEvent, bot: Bot):
         event = EssenceEvent(**event.model_dump())
     except:
         await essence_set.finish()
-    try:
-        msg = await bot.get_msg(message_id=event.message_id)
-    except:
-        if event.sub_type == "add":
+    msg = None
+    if event.message_id is not None:
+        try:
+            msg = await bot.get_msg(message_id=event.message_id)
+        except Exception:
+            pass
+    if msg is None and event.sub_type == "add":
+        try:
             essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
-            for essence in essencelist:
-                if essence["message_id"] == event.message_id:
-                    msg = {"message": essence["content"]}
-                    break
+        except Exception:
+            essencelist = []
+        for essence in essencelist:
+            if essence.get("message_id") == event.message_id:
+                msg = {"message": essence["content"]}
+                break
+    if msg is None:
+        logger.warning(
+            "无法获取精华消息内容，跳过事件：group_id={} sub_type={}",
+            event.group_id,
+            event.sub_type,
+        )
+        await essence_set.finish()
     if event.sub_type == "add":
         await SaveMsg(
             db, msg, bot, event.time, event.group_id, event.sender_id, event.operator_id
@@ -222,18 +264,14 @@ async def __(event: NoticeEvent, bot: Bot):
         event = ReactGoodNoticeEvent(**event.model_dump())
     except:
         await trigood.finish()
-    if (
-        int(event.group_id) in cfg.good_essence_enable_groups
-        or str(event.group_id) in cfg.good_essence_enable_groups
-    ):
+    if good_essence_enabled(event.group_id):
         msg_session = f"{event.group_id}_{event.message_id}"
         if isinstance(event.count, int):
             oldcount: int = goodcount.get(msg_session)
             goodcount.modify(msg_session, event.count)
             if oldcount <= event.count and goodcount.too_good_to_essence(msg_session):
                 await whale_essnece_set(
-                    int(event.group_id) in cfg.whale_essnece_enable_groups
-                    or str(event.group_id) in cfg.whale_essnece_enable_groups,
+                    whale_essence_enabled(event.group_id),
                     event.group_id,
                     event.message_id,
                     True,
@@ -245,21 +283,32 @@ async def __(event: NoticeEvent, bot: Bot):
                 try:
                     msg = await bot.get_msg(message_id=event.message_id)
                     sender = msg["sender"]["user_id"]
-                except:
-                    essencelist = await bot.get_essence_msg_list(
-                        group_id=event.group_id
-                    )
+                except Exception:
+                    msg = None
+                    sender = None
+                    try:
+                        essencelist = await bot.get_essence_msg_list(
+                            group_id=event.group_id
+                        )
+                    except Exception:
+                        essencelist = []
                     for essence in essencelist:
-                        if essence["message_id"] == event.message_id:
+                        if essence.get("message_id") == event.message_id:
                             msg = {"message": essence["content"]}
+                            sender = essence.get("sender_id")
                             break
+                if msg is None or sender is None:
+                    logger.warning(
+                        "无法获取取消点赞的消息，跳过数据库删除：group_id={}",
+                        event.group_id,
+                    )
+                    await trigood.finish()
                 await SaveMsg(
                     db, msg, bot, event.time, event.group_id, sender, int(bot.self_id)
                 ).del_from_dataset()
                 try:
                     await whale_essnece_set(
-                        int(event.group_id) in cfg.whale_essnece_enable_groups
-                        or str(event.group_id) in cfg.whale_essnece_enable_groups,
+                        whale_essence_enabled(event.group_id),
                         event.group_id,
                         event.message_id,
                         False,
@@ -272,8 +321,7 @@ async def __(event: NoticeEvent, bot: Bot):
                 goodcount.add(msg_session)
                 if goodcount.too_good_to_essence(msg_session):
                     await whale_essnece_set(
-                        int(event.group_id) in cfg.whale_essnece_enable_groups
-                        or str(event.group_id) in cfg.whale_essnece_enable_groups,
+                        whale_essence_enabled(event.group_id),
                         event.group_id,
                         event.message_id,
                         True,
@@ -285,14 +333,26 @@ async def __(event: NoticeEvent, bot: Bot):
                     try:
                         msg = await bot.get_msg(message_id=event.message_id)
                         sender = msg["sender"]["user_id"]
-                    except:
-                        essencelist = await bot.get_essence_msg_list(
-                            group_id=event.group_id
-                        )
+                    except Exception:
+                        msg = None
+                        sender = None
+                        try:
+                            essencelist = await bot.get_essence_msg_list(
+                                group_id=event.group_id
+                            )
+                        except Exception:
+                            essencelist = []
                         for essence in essencelist:
-                            if essence["message_id"] == event.message_id:
+                            if essence.get("message_id") == event.message_id:
                                 msg = {"message": essence["content"]}
+                                sender = essence.get("sender_id")
                                 break
+                    if msg is None or sender is None:
+                        logger.warning(
+                            "无法获取取消点赞的消息，跳过数据库删除：group_id={}",
+                            event.group_id,
+                        )
+                        await trigood.finish()
                     await SaveMsg(
                         db,
                         msg,
@@ -303,8 +363,7 @@ async def __(event: NoticeEvent, bot: Bot):
                         int(bot.self_id),
                     ).del_from_dataset()
                     await whale_essnece_set(
-                        int(event.group_id) in cfg.whale_essnece_enable_groups
-                        or str(event.group_id) in cfg.whale_essnece_enable_groups,
+                        whale_essence_enabled(event.group_id),
                         event.group_id,
                         event.message_id,
                         False,
@@ -317,16 +376,14 @@ async def help_cmd():
     await essence_cmd.finish(
         "使用说明:\n"
         + "essence help - 显示此帮助信息\n"
-        + "essence random - 随机发送一条精华消息\n"
-        + "essence rank sender - 显示发送者精华消息排行榜\n"
-        + "essence rank operator - 显示管理员设精数量精华消息排行榜\n"
-        + "essence fetchall - 获取群内所有精华消息\n"
-        + "essence export - 导出精华消息\n"
-        + "essence search <str> - 根据关键词搜索精华消息\n"
-        + "essence migrate <int> - 把上一个群的精华消息迁移到本群<int>为上一个群群号\n"
-        + "essence saveall - 将群内所有精华消息图片存至本地\n"
-        + "essence switch - 更改数据库和和群聊的跟随状态\n"
-        + "essence clean - 删除群里所有精华消息(数据库中保留)"
+        + "essence random - 从当前随机发送一条精华消息\n"
+        + "essence rank sender - 显示发送者排行榜\n"
+        + "essence rank operator - 显示设精数量排行榜\n"
+        + "essence search <str> - 搜索全部文本，随机恢复至多 5 条\n"
+        + "essence fetchall - [管理员]同步群内全部精华消息及媒体文件到本地\n"
+        + "essence export - [管理员]打包导出数据库、CSV 和媒体文件\n"
+        + "essence switch - [管理员]切换手动清理模式，暂停或恢复删精事件的数据库联动\n"
+        + "essence clean - [管理员]备份后删除群内全部精华消息，数据库记录保留"
     )
 
 
@@ -335,7 +392,8 @@ async def random_cmd(event: GroupMessageEvent, bot: Bot):
     if ratelimiter.reach_limit(event.get_session_id()):
         await essence_cmd.finish("过量抽精华有害身心健康")
     else:
-        msg = await db.random_essence(event.group_id)
+        pool = cfg.essence_pool(event.group_id)
+        msg = await db.random_essence(pool or ())
         if msg == None:
             await essence_cmd.finish(
                 MessageSegment.text(
@@ -356,26 +414,40 @@ async def random_cmd(event: GroupMessageEvent, bot: Bot):
 async def search_cmd(
     event: GroupMessageEvent, bot: Bot, keyword: Match[str] = AlconnaMatch("keyword")
 ):
-    msg = await db.search_entries(event.group_id, keyword.result)
+    pool = cfg.essence_pool(event.group_id)
+    msg = await db.search_entries(pool or (), keyword.result)
     if not any(msg):
         await essence_cmd.finish("没有找到")
-    sender_ids = [sender_id for _, _, sender_id, _, _, data in msg]
-    msg_data = [data for _, _, _, _, _, data in msg]
+    sender_ids = [sender_id for _, _, sender_id, _, _, _ in msg]
     names = await gather(
-        *[get_name(db, bot, event.group_id, sender_id) for sender_id in sender_ids]
+        *[get_name(db, bot, row[1], sender_id) for row, sender_id in zip(msg, sender_ids)]
     )
-    result = [f"{name}: {data}" for name, data in zip(names, msg_data)]
-    await essence_cmd.finish(MessageSegment.text("\n".join(result)))
+    result = Message()
+    for index, (name, row) in enumerate(zip(names, msg)):
+        if index:
+            result += MessageSegment.text("\n\n")
+        message_type, message_data = row[4], row[5]
+        rendered = SendMsg(
+            Msg.from_database(message_type, message_data),
+            db,
+            bot,
+            row[1],
+        )
+        result += MessageSegment.text(f"{name}:")
+        result += await rendered.get_msg()
+    result.reduce()
+    await essence_cmd.finish(result)
 
 
 @essence_cmd.assign("rank")
 async def rank_cmd(
     event: GroupMessageEvent, bot: Bot, type: Query[str] = Query("~type")
 ):
+    pool = cfg.essence_pool(event.group_id)
     if type.result == "sender":
-        rank = await db.sender_rank(event.group_id, event.user_id)
+        rank = await db.sender_rank(pool or (), event.user_id)
     elif type.result == "operator":
-        rank = await db.operator_rank(event.group_id, event.user_id)
+        rank = await db.operator_rank(pool or (), event.user_id)
     else:
         await essence_cmd.finish("排行类型仅支持 sender 或 operator")
 
@@ -409,7 +481,7 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
                             db,
                             msg,
                             bot,
-                            event.time,
+                            essence.get("operator_time", event.time),
                             event.group_id,
                             essence["sender_id"],
                             essence["operator_id"],
@@ -429,26 +501,23 @@ async def fetchall_cmd(event: GroupMessageEvent, bot: Bot):
 
 
 @essence_cmd_admin.assign(
-    "saveall",
-)
-async def sevaall_cmd(event: GroupMessageEvent, bot: Bot):
-    essencelist = await bot.get_essence_msg_list(group_id=event.group_id)
-    savecount = await fetchpic(essencelist, cfg.img())
-    await essence_cmd.finish(
-        f"总共找到 {len(essencelist)} 条精华消息，成功保存 {savecount} 张图片"
-    )
-
-
-@essence_cmd_admin.assign(
     "export",
 )
 async def export_cmd(event: GroupMessageEvent, bot: Bot):
-    path = await db.export_group_data(event.group_id)
+    pool = cfg.essence_pool(event.group_id)
+    path = await db.export_group_data(pool or (), event.group_id)
     try:
-        await bot.upload_group_file(group_id=event.group_id, file=path, name="essence.db")
-        await essence_cmd.finish(f"请检查群文件")
+        await bot.upload_group_file(
+            group_id=event.group_id,
+            file=path,
+            name=os.path.basename(path),
+        )
+        await essence_cmd.finish("导出完成，请检查群文件")
     except:
-        await essence_cmd.finish(f"上传失败, 请联系bot管理员获取在nonebot_plugin_localstore给出目录下, 名为{os.path.basename(path)}的文件")
+        await essence_cmd.finish(
+            "上传失败，请联系 Bot 管理员获取插件数据目录下的 "
+            f"{os.path.basename(path)}"
+        )
 
 
 @essence_cmd_admin.assign(
@@ -459,7 +528,7 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
     async with ban_lock:
         if event.group_id in clean_running:
             frist = False
-            await essence_cmd.finish("claen正在运行")
+            await essence_cmd.finish("clean 正在运行")
         else:
             clean_running.add(event.group_id)
             frist = True
@@ -476,7 +545,7 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
                             db,
                             msg,
                             bot,
-                            event.time,
+                            essence.get("operator_time", event.time),
                             event.group_id,
                             essence["sender_id"],
                             essence["operator_id"],
@@ -504,23 +573,12 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
 
 
 @essence_cmd_admin.assign(
-    "migrate",
-)
-async def migrate_cmd(
-    event: GroupMessageEvent, bot: Bot, groupid: Match[int] = AlconnaMatch("group_id")
-):
-    group_id = groupid.result
-    essence_updated_count, _ = await db.migrate_group_data(group_id, event.group_id)
-    await essence_cmd.finish(f"成功迁移{essence_updated_count}条精华消息")
-
-
-@essence_cmd_admin.assign(
     "switch",
 )
 async def switch_cmd(event: GroupMessageEvent, bot: Bot):
     if event.group_id in clean_running:
         clean_running.remove(event.group_id)
-        await essence_cmd.finish("现在删除群内精华会在数据库同步删除")
+        await essence_cmd.finish("已关闭手动清理模式，删精时将同步删除数据库记录")
     else:
         clean_running.add(event.group_id)
-        await essence_cmd.finish("现在删除群内精华不会在数据库同步删除")
+        await essence_cmd.finish("已开启手动清理模式，删精时将保留数据库记录")

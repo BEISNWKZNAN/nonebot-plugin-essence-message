@@ -34,15 +34,14 @@ _✨ 用于整理精华消息 ✨_
    - user_mapping 新增 `UNIQUE` 唯一性约束（nickname + group_id + user_id 组合）
    - 消息改用带版本号的 JSON 格式存储
    - 图片从数据库 Base64 数据迁移至数据库同目录下的 `img/`，数据库仅保存相对路径
-2. 程序启动时会异步、幂等地完成数据库结构转换，不再重复重建
-3. 升级前务必同时备份 SQLite 数据库和 `img/` 目录。旧版本已经截断的数据无法通过迁移恢复
-4. 数据库文件在nonebot_plugin_localstore给出的插件数据目录的中的essence_message子目录下, 文件名为essence_message.db
-5. 根据[Nonebot文档](https://nonebot.dev/docs/best-practice/data-storing)以下是默认插件数据目录
+2. 每次重建前会通过 SQLite 在线备份 API 自动备份数据库，备份文件位于数据库同目录的
+   `backups/`；媒体目录仍需单独备份。旧版本已经截断的数据无法通过迁移恢复
+3. 数据库文件在nonebot_plugin_localstore给出的插件数据目录的中的essence_message子目录下, 文件名为essence_message.db
+4. 根据[Nonebot文档](https://nonebot.dev/docs/best-practice/data-storing)以下是默认插件数据目录
     - macOS: `~/Library/Application` Support/nonebot2
     - Unix: `~/.local/share/nonebot2` or in `$XDG_DATA_HOME`, if defined
     - Win XP (not roaming): `C:\Documents and Settings\<username>\Application Data\nonebot2`
     - Win 7 (not roaming): `C:\Users\<username>\AppData\Local\nonebot2`
-
 
 ## 💿 安装
 
@@ -78,33 +77,47 @@ _✨ 用于整理精华消息 ✨_
 | :-------------------------: | :---: | :----: | :-------------------------------------------------------------------: |
 |    essence_random_limit     |  否   |   5    |                  `essence random` 指令的使用次数上限                  |
 |   essence_random_cooldown   |  否   |   5    |                `essence random` 指令的使用次数冷却时间                |
-|    essence_enable_groups    |  否   |  all   |              启用群号列表，默认为 `all` 表示所有群都启用              |
-| good_essence_enable_groups  |  否   |   []   | 是否启用n赞加精功能,会对点赞数超过good_bound的消息自动加精,默认不启用 |
+|    essence_enable_groups    |  否   | `["all"]` |       启用群列表或二维共享池配置，详见下方说明                         |
+| good_essence_enable_groups  |  否   |   []   | 启用 n 赞加精；共享池内任一群启用时，整个池都启用                     |
 |         good_bound          |  否   |   3    |                                 如上                                  |
-| whale_essnece_enable_groups |  否   |   []   |      是否使用Reaction🐳代替设精,用于防止精华消息过于泛滥导致刷屏       |
+| whale_essnece_enable_groups |  否   |   []   | 使用 Reaction 🐳代替设精；共享池内任一群启用时，整个池都启用          |
+
+`essence_enable_groups` 支持以下形式：
+
+- `["all"]`：启用所有群，每个群使用独立精华池。
+- `[1, 2]`：仅启用群 1、2，并分别使用独立精华池。
+- `[[1], [2, 3]]`：群 1 使用独立池，群 2、3 共享一个精华池。
+- `[1, [2, 3]]`：支持混合配置；群 1 使用独立池，群 2、3 共享一个精华池。
+- `[["all"]]`：启用所有群，并让所有群共享同一个全局精华池。
+
+共享池会影响 `random`、`search`、`rank` 和 `export`；消息仍按实际来源群号
+写入数据库，`fetchall` 与 `clean` 也只操作当前群。
 
 如果要寻找数据库和缓存的位置,请参考nonebot文档的[data-storing](https://nonebot.dev/docs/best-practice/data-storing)章节
 ## 🎉 使用
 ### 指令表
-| 指令                    | 权限   | 需要@ | 范围 | 说明                                 |
-| ----------------------- | ------ | ----- | ---- | ------------------------------------ |
-| `essence help`          | 群员   | 否    | 群聊 | 显示所有可用指令及其说明             |
-| `essence random`        | 群员   | 否    | 群聊 | 随机发送一条精华消息                 |
-| `essence rank sender`   | 群员   | 否    | 群聊 | 显示发送者精华消息排行榜             |
-| `essence rank operator` | 群员   | 否    | 群聊 | 显示管理员设精数量排行榜             |
-| `essence fetchall`      | 管理员 | 否    | 群聊 | 获取群内所有精华消息并存储到数据库   |
-| `essence export`        | 管理员 | 否    | 群聊 | 导出当前群的精华消息数据库文件       |
-| `essence search <str>`  | 群员   | 否    | 群聊 | 根据关键词搜索精华消息               |
-| `essence migrate <int>` | 管理员 | 否    | 群聊 | 将指定群号的精华消息迁移到本群       |
-| `essence saveall`       | 管理员 | 否    | 群聊 | 将群内所有精华消息中的图片保存至本地 |
-| `essence switch`        | 管理员 | 否    | 群聊 | 更改数据库和群聊的跟随状态           |
-| `essence clean`         | 管理员 | 否    | 群聊 | 删除群里所有精华消息（数据库中保留） |
-*在先前的版本中只有essence clean可以不清理数据库的删除群内精华消息, 但是现实的bot有很多情况. 当onebot实现并不能很好的按预期运行时, 可以使用essence switch指令用于手动清理群内精华
+| 指令                    | 权限   | 需要@ | 范围 | 说明                                                   |
+| ----------------------- | ------ | ----- | ---- | ------------------------------------------------------ |
+| `essence help`          | 群员   | 否    | 群聊 | 显示此帮助信息                                         |
+| `essence random`        | 群员   | 否    | 群聊 | 从当前随机发送一条精华消息                             |
+| `essence search <str>`  | 群员   | 否    | 群聊 | 搜索全部文本，随机恢复至多 5 条                        |
+| `essence rank sender`   | 群员   | 否    | 群聊 | 显示发送者排行榜                                       |
+| `essence rank operator` | 群员   | 否    | 群聊 | 显示设精数量排行榜                                     |
+| `essence fetchall`      | 管理员 | 否    | 群聊 | 同步群内全部精华消息及媒体文件到本地                   |
+| `essence export`        | 管理员 | 否    | 群聊 | 打包导出数据库、CSV 和媒体文件                         |
+| `essence switch`        | 管理员 | 否    | 群聊 | 切换手动清理模式，暂停或恢复删精事件的数据库联动       |
+| `essence clean`         | 管理员 | 否    | 群聊 | 备份后删除群内全部精华消息，数据库记录保留             |
+
+`essence fetchall` 已包含媒体文件持久化，因此不再单独提供 `essence saveall`。
+
+`essence export` 生成 ZIP 包，其中包含 `essence.db`、带 UTF-8 BOM 的
+`messages.csv`，以及当前群消息引用的本地图片、语音和视频。媒体文件在压缩包中
+保留原相对目录结构。
 
 ### 精华事件
 - 本插件在正常工作时, 会对精华消息做出响应, 随之把消息存入或删除数据库.  
-- 当精华消息空间满了之后,可以使用essence clean删除精华消息, 这次清理不会删除数据库中的精华消息.
-- 如果essence clean不能正常工作, 需要先essence switch确保qq中的精华消息不会影响数据库, 然后手动清理, 然后再运行一次essence switch
+- 当精华消息空间满了之后，可以使用 `essence clean` 先同步备份，再清空群精华；数据库记录不会删除。
+- `switch` 与 `clean` 共用清理状态。如果自动清理不可用，可先执行一次 `essence switch` 进入手动清理模式，再手动删除群精华；完成后再次执行，恢复数据库同步删除。手动清理模式下再次执行 `clean` 会提示清理正在运行。
 
 ### Reaction事件
 - 本插件在正常工作时,会对🐳(code:128051)和👍(code:74)做出响应.  

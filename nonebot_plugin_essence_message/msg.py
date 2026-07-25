@@ -4,15 +4,15 @@ import binascii
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
-
-if TYPE_CHECKING:
-    from nonebot.adapters.onebot.v11.bot import Bot
+from nonebot.adapters.onebot.v11.bot import Bot
 
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+MAX_NESTING_DEPTH = 256
 
 
 class Msg:
@@ -29,11 +29,12 @@ class Msg:
         self.children = children or []
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "data": self.data,
-            "children": [child.to_dict() for child in self.children],
-        }
+        node: dict[str, Any] = {"type": self.type}
+        if self.data:
+            node["data"] = self.data
+        if self.children:
+            node["children"] = [child.to_dict() for child in self.children]
+        return node
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Msg":
@@ -50,28 +51,35 @@ class Msg:
         )
 
     def serialize(self) -> str:
+        segments = self.children if self.type == "group" else [self]
         return json.dumps(
-            {"version": FORMAT_VERSION, "message": self.to_dict()},
+            {
+                "version": FORMAT_VERSION,
+                "segments": [segment.to_dict() for segment in segments],
+            },
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
 
     @classmethod
-    def deserialize(cls, value: str) -> "Msg":
+    def deserialize(cls, value: str | bytes) -> "Msg":
+        value = _decode_document(value)
         document = json.loads(value)
-        if (
-            not isinstance(document, dict)
-            or document.get("version") != FORMAT_VERSION
-            or not isinstance(document.get("message"), dict)
-        ):
+        if not isinstance(document, dict):
             raise ValueError("Unsupported message document")
-        return cls.from_dict(document["message"])
 
-    @classmethod
-    def from_database(cls, message_type: str, value: str) -> "Msg":
-        try:
-            message = cls.deserialize(value)
+        if document.get("version") == FORMAT_VERSION:
+            raw_segments = document.get("segments")
+            if not isinstance(raw_segments, list):
+                raise ValueError("Message document has no segments")
+            segments = [cls.from_dict(segment) for segment in raw_segments]
+            return segments[0] if len(segments) == 1 else cls("group", children=segments)
+
+        if document.get("version") == 2 and isinstance(
+            document.get("message"), dict
+        ):
+            message = cls.from_dict(document["message"])
             if message.type == "message":
                 return (
                     message.children[0]
@@ -79,21 +87,34 @@ class Msg:
                     else cls("group", children=message.children)
                 )
             return message
-        except (json.JSONDecodeError, TypeError, ValueError):
-            nodes = _legacy_nodes(message_type, value)
+
+        raise ValueError("Unsupported message document")
+
+    @classmethod
+    def from_database(cls, message_type: str, value: str | bytes) -> "Msg":
+        try:
+            return cls.deserialize(value)
+        except (json.JSONDecodeError, TypeError, UnicodeError, ValueError):
+            nodes = _legacy_nodes(message_type, _decode_document(value))
             return nodes[0] if len(nodes) == 1 else cls("group", children=nodes)
 
     @classmethod
     async def from_onebot(
         cls,
         raw_message: dict[str, Any],
-        bot: "Bot",
+        bot: Bot,
         image_dir: Path,
         database_dir: Path,
     ) -> "Msg":
         async with httpx.AsyncClient() as client:
             children = await cls._from_onebot_segments(
-                raw_message["message"], bot, client, image_dir, database_dir
+                raw_message["message"],
+                bot,
+                client,
+                image_dir,
+                database_dir,
+                visited_replies=set(),
+                depth=0,
             )
         return children[0] if len(children) == 1 else cls("group", children=children)
 
@@ -101,46 +122,160 @@ class Msg:
     async def _from_onebot_segments(
         cls,
         raw_segments: Any,
-        bot: "Bot",
+        bot: Bot,
         client: httpx.AsyncClient,
         image_dir: Path,
         database_dir: Path,
+        visited_replies: set[str],
+        depth: int,
     ) -> list["Msg"]:
-        result = []
+        if depth > MAX_NESTING_DEPTH:
+            return []
+        if isinstance(raw_segments, str):
+            return [cls("text", {"text": raw_segments})]
+        if isinstance(raw_segments, dict):
+            raw_segments = [raw_segments]
+
+        result: list[Msg] = []
         for raw_segment in raw_segments:
             if isinstance(raw_segment, dict):
-                segment_type = raw_segment["type"]
-                data = dict(raw_segment.get("data", {}))
+                segment_type = raw_segment.get("type")
+                raw_data = raw_segment.get("data", {})
             else:
                 segment_type = raw_segment.type
-                data = dict(raw_segment.data)
+                raw_data = raw_segment.data
+            if not isinstance(segment_type, str):
+                continue
+            data = dict(raw_data) if isinstance(raw_data, dict) else {"raw": raw_data}
 
-            children = []
-            if segment_type == "image":
-                content: Optional[bytes] = None
-                source = data.get("file")
-                if isinstance(source, str) and source.startswith("base64://"):
-                    content = base64.b64decode(source[9:])
-                elif isinstance(data.get("url"), str):
-                    response = await client.get(data["url"])
-                    response.raise_for_status()
-                    content = response.content
+            children: list[Msg] = []
+            if segment_type in {"image", "record", "video"}:
+                content, source = await _download_media(data, client)
                 if content is not None:
+                    media_dir = (
+                        image_dir
+                        if segment_type == "image"
+                        else database_dir / "media" / segment_type
+                    )
                     relative_path = await asyncio.to_thread(
-                        store_image, content, image_dir, database_dir
+                        store_media,
+                        content,
+                        media_dir,
+                        database_dir,
+                        segment_type,
+                        source,
                     )
-                    data = {"path": relative_path}
+                    data["local_path"] = relative_path
+                    # NapCat may refresh these values for the same media. Once a
+                    # durable local copy exists, keeping them would make content
+                    # hashes unstable across repeated fetches.
+                    data.pop("file", None)
+                    data.pop("url", None)
             elif segment_type == "reply":
-                try:
-                    replied = await bot.get_msg(message_id=int(data["id"]))
-                    children = await cls._from_onebot_segments(
-                        replied["message"], bot, client, image_dir, database_dir
-                    )
-                except Exception:
-                    children = []
-                data = {}
+                reply_id = data.get("id", data.get("seq"))
+                reply_key = str(reply_id) if reply_id is not None else ""
+                if reply_key and reply_key not in visited_replies:
+                    visited_replies.add(reply_key)
+                    try:
+                        replied = await bot.get_msg(message_id=int(reply_key))
+                        children = await cls._from_onebot_segments(
+                            replied["message"],
+                            bot,
+                            client,
+                            image_dir,
+                            database_dir,
+                            visited_replies,
+                            depth + 1,
+                        )
+                        _copy_message_metadata(data, replied)
+                    except Exception:
+                        children = []
+            elif segment_type in {"node", "forward"}:
+                nested = data.pop("content", None)
+                if nested is None:
+                    nested = data.pop("message", None)
+                if (
+                    nested is None
+                    and segment_type == "forward"
+                    and data.get("id") is not None
+                ):
+                    try:
+                        forwarded = await bot.get_forward_msg(id=str(data["id"]))
+                        nested = forwarded.get(
+                            "messages",
+                            forwarded.get("message", forwarded.get("content")),
+                        )
+                    except Exception:
+                        nested = None
+                children = await cls._from_forward_content(
+                    nested,
+                    bot,
+                    client,
+                    image_dir,
+                    database_dir,
+                    visited_replies,
+                    depth + 1,
+                )
 
             result.append(cls(segment_type, data, children))
+        return result
+
+    @classmethod
+    async def _from_forward_content(
+        cls,
+        content: Any,
+        bot: Bot,
+        client: httpx.AsyncClient,
+        image_dir: Path,
+        database_dir: Path,
+        visited_replies: set[str],
+        depth: int,
+    ) -> list["Msg"]:
+        if content is None or depth > MAX_NESTING_DEPTH:
+            return []
+        if isinstance(content, dict):
+            if "type" not in content and isinstance(content.get("messages"), list):
+                content = content["messages"]
+            else:
+                content = [content]
+        if isinstance(content, str):
+            return [cls("text", {"text": content})]
+
+        result: list[Msg] = []
+        for item in content:
+            if (
+                isinstance(item, dict)
+                and "type" not in item
+                and ("message" in item or "content" in item)
+            ):
+                metadata: dict[str, Any] = {}
+                _copy_message_metadata(metadata, item)
+                sender = item.get("sender")
+                if isinstance(sender, dict):
+                    metadata["sender"] = sender
+                nested_content = item.get("message", item.get("content"))
+                nested = await cls._from_onebot_segments(
+                    nested_content,
+                    bot,
+                    client,
+                    image_dir,
+                    database_dir,
+                    visited_replies,
+                    depth,
+                )
+                result.append(cls("node", metadata, nested))
+            else:
+                result.extend(
+                    await cls._from_onebot_segments(
+                        [item],
+                        bot,
+                        client,
+                        image_dir,
+                        database_dir,
+                        visited_replies,
+                        depth,
+                    )
+                )
         return result
 
     def migrate_images(self, image_dir: Path, database_dir: Path) -> int:
@@ -153,13 +288,28 @@ class Msg:
                 except (ValueError, binascii.Error):
                     content = None
                 if content is not None:
-                    self.data = {
-                        "path": store_image(content, image_dir, database_dir)
-                    }
+                    self.data.pop("file", None)
+                    self.data["local_path"] = store_media(
+                        content, image_dir, database_dir, "image"
+                    )
                     migrated += 1
         for child in self.children:
             migrated += child.migrate_images(image_dir, database_dir)
         return migrated
+
+    def discard_stored_media_sources(self) -> int:
+        """Remove volatile remote sources when a durable local copy exists."""
+        changed = 0
+        if self.type in {"image", "record", "video"} and isinstance(
+            self.data.get("local_path", self.data.get("path")), str
+        ):
+            for key in ("file", "url"):
+                if key in self.data:
+                    self.data.pop(key)
+                    changed += 1
+        for child in self.children:
+            changed += child.discard_stored_media_sources()
+        return changed
 
     def text_content(self) -> str:
         text = ""
@@ -168,6 +318,20 @@ class Msg:
             if isinstance(value, str):
                 text = value
         return text + "".join(child.text_content() for child in self.children)
+
+
+def _decode_document(value: str | bytes) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, bytes):
+        raise TypeError("Message document must be text or bytes")
+
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return value.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return value.decode("utf-8", errors="replace")
 
 
 def _legacy_parse(value: str) -> list[str]:
@@ -229,28 +393,110 @@ def _legacy_nodes(message_type: str, value: str) -> list[Msg]:
     return [Msg(message_type, {data_key: value})]
 
 
-def _image_suffix(content: bytes) -> str:
+def _copy_message_metadata(target: dict[str, Any], message: dict[str, Any]) -> None:
+    for key in (
+        "message_id",
+        "message_seq",
+        "real_id",
+        "time",
+        "user_id",
+        "group_id",
+        "nickname",
+        "source",
+        "summary",
+        "prompt",
+    ):
+        value = message.get(key)
+        if value is not None:
+            target[key] = value
+
+
+async def _download_media(
+    data: dict[str, Any], client: httpx.AsyncClient
+) -> tuple[Optional[bytes], Optional[str]]:
+    source = data.get("file")
+    if isinstance(source, str) and source.startswith("base64://"):
+        try:
+            return base64.b64decode(source[9:], validate=True), source
+        except (ValueError, binascii.Error):
+            return None, source
+
+    url = data.get("url")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return None, source if isinstance(source, str) else None
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content, url
+    except httpx.HTTPError:
+        return None, url
+
+
+def _media_suffix(
+    content: bytes, media_type: str, source: Optional[str] = None
+) -> str:
     if content.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png"
     if content.startswith((b"GIF87a", b"GIF89a")):
         return ".gif"
     if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
         return ".webp"
-    return ".jpg"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"#!AMR"):
+        return ".amr"
+    if content.startswith(b"OggS"):
+        return ".ogg"
+    if content.startswith(b"RIFF") and content[8:12] == b"WAVE":
+        return ".wav"
+    if len(content) >= 12 and content[4:8] == b"ftyp":
+        return ".mp4"
+    if isinstance(source, str):
+        suffix = Path(urlparse(source).path).suffix.lower()
+        if suffix and len(suffix) <= 10 and suffix[1:].isalnum():
+            return suffix
+    return {"image": ".jpg", "record": ".audio", "video": ".video"}.get(
+        media_type, ".bin"
+    )
 
 
-def store_image(content: bytes, image_dir: Path, database_dir: Path) -> str:
+def store_media(
+    content: bytes,
+    media_dir: Path,
+    database_dir: Path,
+    media_type: str,
+    source: Optional[str] = None,
+) -> str:
     digest = hashlib.sha256(content).hexdigest()
-    path = image_dir / f"{digest}{_image_suffix(content)}"
-    image_dir.mkdir(parents=True, exist_ok=True)
+    path = media_dir / f"{digest}{_media_suffix(content, media_type, source)}"
+    media_dir.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_bytes(content)
     return path.relative_to(database_dir).as_posix()
 
 
-def resolve_image_path(data: dict[str, Any], database_dir: Path) -> Optional[str]:
-    relative_path = data.get("path")
+def resolve_media_source(data: dict[str, Any], database_dir: Path) -> Optional[str]:
+    relative_path = data.get("local_path", data.get("path"))
     if isinstance(relative_path, str):
-        return str(database_dir / relative_path)
+        path = Path(relative_path)
+        path = path if path.is_absolute() else database_dir / path
+        try:
+            content = path.read_bytes()
+        except OSError:
+            pass
+        else:
+            return "base64://" + base64.b64encode(content).decode("ascii")
     source = data.get("file")
-    return source if isinstance(source, str) else None
+    if isinstance(source, str):
+        return source
+    url = data.get("url")
+    return url if isinstance(url, str) else None
+
+
+# Kept for callers using the old public helpers.
+def store_image(content: bytes, image_dir: Path, database_dir: Path) -> str:
+    return store_media(content, image_dir, database_dir, "image")
+
+
+def resolve_image_path(data: dict[str, Any], database_dir: Path) -> Optional[str]:
+    return resolve_media_source(data, database_dir)

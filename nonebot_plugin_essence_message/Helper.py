@@ -1,9 +1,7 @@
 import asyncio
 import json
-import os
 from pathlib import Path
 from time import time
-import httpx
 from nonebot.adapters.onebot.v11.bot import Bot
 from nonebot.adapters.onebot.v11 import NoticeEvent
 from nonebot.adapters.onebot.v11.message import Message
@@ -13,7 +11,7 @@ from nonebot.permission import Permission
 from pydantic import BaseModel
 
 from .dataset import DatabaseHandler
-from .msg import Msg, resolve_image_path
+from .msg import Msg, resolve_media_source
 
 
 async def _notice_permission(event: NoticeEvent, bot: "Bot") -> bool:
@@ -178,7 +176,8 @@ class SaveMsg:
         self.db = db
         self.msg = msg
         self.bot = bot
-        self.timestamp = timestamp
+        message_time = msg.get("time")
+        self.timestamp = message_time if isinstance(message_time, int) else timestamp
         self.group_id = group_id
         self.sender_id = sender_id
         self.operator_id = operator_id
@@ -198,13 +197,12 @@ class SaveMsg:
             "message_type": data.type,
             "message_data": data.serialize(),
         }
-        if not await self.db.entry_exists(self.msg_data):
+        inserted = await self.db.insert_data(self.msg_data)
+        if inserted:
             await get_name(
                 self.db, self.bot, self.group_id, self.sender_id, False
             )  # 设精更新用户昵称
-            return await self.db.insert_data(self.msg_data)
-        else:
-            return False
+        return inserted
 
     async def del_from_dataset(self):
         data = await Msg.from_onebot(
@@ -327,51 +325,44 @@ class SendMsg:
         database_dir = Path(self.db.db_path).parent
         for message in messages:
             if message.type == "at":
-                result += MessageSegment.text(
-                    f"@{await self.get_name(int(message.data.get('qq', 0)))} "
-                )
+                qq = message.data.get("qq", 0)
+                if str(qq) == "all":
+                    name = "全体成员"
+                else:
+                    try:
+                        name = await self.get_name(int(qq))
+                    except (TypeError, ValueError):
+                        name = str(message.data.get("name", qq))
+                result += MessageSegment.text(f"@{name} ")
             elif message.type == "image":
-                source = resolve_image_path(message.data, database_dir)
+                source = resolve_media_source(message.data, database_dir)
                 if source is not None:
                     result += MessageSegment.image(file=source)
+            elif message.type == "record":
+                source = resolve_media_source(message.data, database_dir)
+                if source is not None:
+                    result += MessageSegment.record(file=source)
+            elif message.type == "video":
+                continue
             elif message.type == "text":
                 result += MessageSegment.text(str(message.data.get("text", "")))
             elif message.type == "reply":
                 result += await self._render(message.children, depth + 1)
-                result += MessageSegment.text("\n" + ">" * depth + " ")
+                result += MessageSegment.text("\n" + ">" * max(depth, 1) + " ")
+            elif message.type in {"node", "forward"} and message.children:
+                sender = message.data.get("nickname")
+                if not isinstance(sender, str):
+                    sender_data = message.data.get("sender")
+                    sender = (
+                        sender_data.get("nickname")
+                        if isinstance(sender_data, dict)
+                        else None
+                    )
+                if sender:
+                    result += MessageSegment.text(f"\n{sender}: ")
+                result += await self._render(message.children, depth + 1)
             elif message.type == "face":
                 result += MessageSegment.face(int(message.data.get("id", 0)))
             else:
                 result += MessageSegment(type=message.type, data=message.data)
         return result
-
-
-async def fetchpic(essencelist, image_directory):
-    os.makedirs(image_directory, exist_ok=True)
-    savecount = 0
-
-    async with httpx.AsyncClient() as client:
-        for essence in essencelist:
-            sender_time = essence["operator_time"]
-            sender_nick = essence["sender_nick"]
-            for content in essence["content"]:
-                if content["type"] == "image":
-                    image_url = content["data"]["url"]
-                    response = await client.get(image_url)
-                    if response.status_code == 200:
-                        image_data = response.content
-                        image_filename = f"{sender_time}_{sender_nick}.jpeg"
-                        image_path_count = 1
-                        image_save_path = os.path.join(image_directory, image_filename)
-                        while os.path.exists(image_save_path):
-                            image_filename = (
-                                f"{sender_time}_{sender_nick}({image_path_count}).jpeg"
-                            )
-                            image_save_path = os.path.join(
-                                image_directory, image_filename
-                            )
-                            image_path_count += 1
-                        with open(image_save_path, "wb") as image_file:
-                            image_file.write(image_data)
-                            savecount += 1
-    return savecount
