@@ -1,7 +1,7 @@
 from asyncio import gather, Lock
 from typing import Union
 
-from nonebot import get_plugin_config, on_notice, on_type
+from nonebot import get_driver, get_plugin_config, on_notice
 from nonebot.adapters.onebot.v11 import (
     NoticeEvent,
     MessageSegment,
@@ -18,7 +18,7 @@ require("nonebot_plugin_alconna")
 from arclet.alconna import Alconna, Args, Subcommand
 from nonebot_plugin_alconna import AlconnaMatch, Match, Query, on_alconna
 from .dataset import DatabaseHandler
-from .config import config
+from .config import Config
 from .Helper import (
     ReactGoodNoticeEvent,
     EssenceEvent,
@@ -40,7 +40,7 @@ __plugin_meta__ = PluginMetadata(
     usage=("自动存储精华消息备份并提供一些查询功能"),
     type="application",
     homepage="https://github.com/MovFish/nonebot-plugin-essence-message",
-    config=config,
+    config=Config,
     supported_adapters={"~onebot.v11"},
 )
 
@@ -73,7 +73,7 @@ def trigood_rule(event: NoticeEvent):
         return False
 
 
-cfg = get_plugin_config(config)
+cfg = get_plugin_config(Config)
 db = DatabaseHandler(str(cfg.db()))
 goodcount = GoodCounter(cfg.cache() / "good_cache.json", cfg.good_bound)
 ratelimiter = RateLimiter(cfg.essence_random_limit, 43200, cfg.essence_random_cooldown)
@@ -81,6 +81,11 @@ ratelimiter = RateLimiter(cfg.essence_random_limit, 43200, cfg.essence_random_co
 fetchall_running: set[int] = set()
 clean_running: set[int] = set()
 ban_lock = Lock()
+
+
+@get_driver().on_startup
+async def _initialize_database() -> None:
+    await db.initialize()
 
 whale_essnece = on_notice(
     rule=whale_essnece_rule,
@@ -199,11 +204,11 @@ async def ___(event: NoticeEvent, bot: Bot):
     elif event.sub_type == "delete":
         global clean_running
         if event.group_id in clean_running:
-            await essence_cmd.finish()
+            await essence_set.finish()
         await SaveMsg(
             db, msg, bot, event.time, event.group_id, event.sender_id, event.operator_id
         ).del_from_dataset()
-    await essence_cmd.finish()
+    await essence_set.finish()
 
 
 @trigood.handle()
@@ -220,7 +225,7 @@ async def __(event: NoticeEvent, bot: Bot):
         if isinstance(event.count, int):
             oldcount: int = goodcount.get(msg_session)
             goodcount.modify(msg_session, event.count)
-            if oldcount <= event.count and goodcount.ToogoodToessence(msg_session):
+            if oldcount <= event.count and goodcount.too_good_to_essence(msg_session):
                 await whale_essnece_set(
                     int(event.group_id) in cfg.whale_essnece_enable_groups
                     or str(event.group_id) in cfg.whale_essnece_enable_groups,
@@ -229,7 +234,9 @@ async def __(event: NoticeEvent, bot: Bot):
                     True,
                     bot,
                 )
-            if oldcount > event.count and not goodcount.ToogoodToessence(msg_session):
+            if oldcount > event.count and not goodcount.too_good_to_essence(
+                msg_session
+            ):
                 try:
                     msg = await bot.get_msg(message_id=event.message_id)
                     sender = msg["sender"]["user_id"]
@@ -258,7 +265,7 @@ async def __(event: NoticeEvent, bot: Bot):
         else:
             if event.sub_type == "add":
                 goodcount.add(msg_session)
-                if goodcount.ToogoodToessence(msg_session):
+                if goodcount.too_good_to_essence(msg_session):
                     await whale_essnece_set(
                         int(event.group_id) in cfg.whale_essnece_enable_groups
                         or str(event.group_id) in cfg.whale_essnece_enable_groups,
@@ -269,7 +276,7 @@ async def __(event: NoticeEvent, bot: Bot):
                     )
             elif event.sub_type == "remove":
                 goodcount.remove(msg_session)
-                if not goodcount.ToogoodToessence(msg_session):
+                if not goodcount.too_good_to_essence(msg_session):
                     try:
                         msg = await bot.get_msg(message_id=event.message_id)
                         sender = msg["sender"]["user_id"]
@@ -364,6 +371,8 @@ async def rank_cmd(
         rank = await db.sender_rank(event.group_id, event.user_id)
     elif type.result == "operator":
         rank = await db.operator_rank(event.group_id, event.user_id)
+    else:
+        await essence_cmd.finish("排行类型仅支持 sender 或 operator")
 
     names = await gather(*[get_name(db, bot, event.group_id, id) for id, _, _ in rank])
     result = [

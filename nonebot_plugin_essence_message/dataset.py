@@ -1,4 +1,4 @@
-import asyncio
+import hashlib
 import random
 import aiosqlite
 import os
@@ -7,7 +7,12 @@ import time
 
 
 class DatabaseHandler:
-    async def _create_table(self):
+    @staticmethod
+    def _content_hash(message_data: str) -> str:
+        return hashlib.sha256(message_data.encode("utf-8")).hexdigest()
+
+    async def initialize(self) -> None:
+        """Create and migrate the database without blocking the running event loop."""
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA synchronous=NORMAL;")
@@ -19,78 +24,85 @@ class DatabaseHandler:
                     sender_id INTEGER,
                     operator_id INTEGER,
                     message_type TEXT,
-                    message_data TEXT
+                    message_data TEXT,
+                    content_hash TEXT
                 )"""
             )
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_essence_exists'"
-            )
-            index_exists = await cursor.fetchone()
-            if not index_exists:
-                await conn.execute(
-                    "CREATE INDEX idx_essence_exists ON essence_data (group_id, sender_id, message_type, message_data)"
-                )
-            cursor = await conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_mapping'"
-            )
-            table_exists = await cursor.fetchone()
-            # 迁移旧user_mapping表结构
-            if table_exists:
-                await conn.execute(
-                    """
-                    CREATE TEMPORARY TABLE temp_mapping AS
-                    SELECT nickname, group_id, user_id, MAX(time) as max_time
-                    FROM user_mapping
-                    GROUP BY nickname, group_id, user_id
-                """
-                )
+            cursor = await conn.execute("PRAGMA table_info(essence_data)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "content_hash" not in columns:
+                await conn.execute("ALTER TABLE essence_data ADD COLUMN content_hash TEXT")
 
-                await conn.execute("DROP TABLE user_mapping")  # 删除旧表
-                await conn.execute(
-                    """
-                    CREATE TABLE user_mapping (
-                        nickname TEXT NOT NULL,
-                        group_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        time INTEGER NOT NULL,
-                        UNIQUE(nickname, group_id, user_id)  -- 新增唯一约束
+            cursor = await conn.execute(
+                "SELECT rowid, message_data FROM essence_data WHERE content_hash IS NULL"
+            )
+            rows_without_hash = await cursor.fetchall()
+            if rows_without_hash:
+                await conn.executemany(
+                    "UPDATE essence_data SET content_hash = ? WHERE rowid = ?",
+                    [
+                        (self._content_hash(message_data), rowid)
+                        for rowid, message_data in rows_without_hash
+                    ],
+                )
+            await conn.execute("DROP INDEX IF EXISTS idx_essence_exists")
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_essence_identity
+                ON essence_data (
+                    group_id, sender_id, operator_id, message_type, content_hash
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_mapping (
+                    nickname TEXT NOT NULL,
+                    group_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    time INTEGER NOT NULL
+                )
+                """
+            )
+            # Older releases had no unique constraint. Deduplicate in place rather
+            # than dropping and rebuilding the table on every plugin startup.
+            await conn.execute(
+                """
+                DELETE FROM user_mapping
+                WHERE rowid NOT IN (
+                    SELECT rowid FROM (
+                        SELECT rowid,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY nickname, group_id, user_id
+                                   ORDER BY time DESC, rowid DESC
+                               ) AS position
+                        FROM user_mapping
                     )
-                """
+                    WHERE position = 1
                 )
-
-                await conn.execute(
-                    """
-                    INSERT INTO user_mapping
-                    SELECT nickname, group_id, user_id, max_time
-                    FROM temp_mapping
                 """
-                )
-                await conn.execute("DROP TABLE temp_mapping")
-            else:
-                await conn.execute(
-                    """
-                    CREATE TABLE user_mapping (
-                        nickname TEXT NOT NULL,
-                        group_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        time INTEGER NOT NULL,
-                        UNIQUE(nickname, group_id, user_id)
-                    )
+            )
+            await conn.execute(
                 """
-                )
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_user_mapping_unique
+                ON user_mapping (nickname, group_id, user_id)
+                """
+            )
 
             await conn.commit()
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        asyncio.run(self._create_table())
 
     async def insert_data(self, data):
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             await conn.execute(
-                """INSERT INTO essence_data (time, group_id, sender_id, operator_id, message_type, message_data) 
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO essence_data (
+                       time, group_id, sender_id, operator_id,
+                       message_type, message_data, content_hash
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["time"],
                     data["group_id"],
@@ -98,13 +110,14 @@ class DatabaseHandler:
                     data["operator_id"],
                     data["message_type"],
                     data["message_data"],
+                    self._content_hash(data["message_data"]),
                 ),
             )
             await conn.commit()
         return True
 
     async def delete_data(self, data):
-        data["message_data"] = data["message_data"][:100]
+        content_hash = self._content_hash(data["message_data"])
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             cursor = await conn.execute(
@@ -114,13 +127,15 @@ class DatabaseHandler:
                        AND sender_id = ? 
                        AND operator_id = ? 
                        AND message_type = ? 
-                       AND message_data LIKE ? 
+                       AND content_hash = ?
+                       AND message_data = ?
                        LIMIT 1""",
                 (
                     data["group_id"],
                     data["sender_id"],
                     data["operator_id"],
                     data["message_type"],
+                    content_hash,
                     data["message_data"],
                 ),
             )
@@ -289,7 +304,9 @@ class DatabaseHandler:
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             cursor = await conn.execute(
-                """SELECT * FROM essence_data 
+                """SELECT time, group_id, sender_id, operator_id,
+                          message_type, message_data
+                FROM essence_data
                 WHERE group_id = ? 
                 AND message_type = 'text' 
                 AND LENGTH(message_data) <= 100 
@@ -315,17 +332,22 @@ class DatabaseHandler:
                        sender_id INTEGER,
                        operator_id INTEGER,
                        message_type TEXT,
-                       message_data TEXT
+                       message_data TEXT,
+                       content_hash TEXT
                     )"""
                 )
                 cursor = await conn.execute(
-                    "SELECT * FROM essence_data WHERE group_id = ?", (group_id,)
+                    """SELECT time, group_id, sender_id, operator_id,
+                              message_type, message_data, content_hash
+                       FROM essence_data WHERE group_id = ?""",
+                    (group_id,),
                 )
                 rows = await cursor.fetchall()
                 await export_conn.executemany(
                     """INSERT INTO essence_data 
-                       (time, group_id, sender_id, operator_id, message_type, message_data) 
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (time, group_id, sender_id, operator_id,
+                        message_type, message_data, content_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     rows,
                 )
                 await export_conn.commit()
@@ -365,7 +387,9 @@ class DatabaseHandler:
                 CREATE TEMPORARY TABLE IF NOT EXISTS min_rowids AS
                 SELECT MIN(rowid) as min_rowid
                 FROM essence_data
-                GROUP BY group_id, sender_id, message_type, message_data
+                GROUP BY
+                    group_id, sender_id, operator_id,
+                    message_type, content_hash, message_data
             """
             )
             cursor = await conn.execute(
@@ -380,7 +404,7 @@ class DatabaseHandler:
             return deleted_count
 
     async def entry_exists(self, data):
-        data["message_data"] = data["message_data"][:100]
+        content_hash = self._content_hash(data["message_data"])
         async with aiosqlite.connect(self.db_path, timeout=5) as conn:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             cursor = await conn.execute(
@@ -388,12 +412,16 @@ class DatabaseHandler:
                    FROM essence_data 
                    WHERE group_id = ? 
                    AND sender_id = ? 
+                   AND operator_id = ?
                    AND message_type = ? 
-                   AND message_data LIKE ? """,
+                   AND content_hash = ?
+                   AND message_data = ?""",
                 (
                     data["group_id"],
                     data["sender_id"],
+                    data["operator_id"],
                     data["message_type"],
+                    content_hash,
                     data["message_data"],
                 ),
             )

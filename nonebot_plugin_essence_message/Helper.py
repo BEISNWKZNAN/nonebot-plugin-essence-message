@@ -110,7 +110,6 @@ class EssenceEvent(NoticeEvent):
 
 
 class GoodCounter:
-    goodmap: dict[str, int] = {}
     cache_file: Path
     good_bound: int
 
@@ -126,7 +125,8 @@ class GoodCounter:
         else:
             self.goodmap = {}
 
-    def __del__(self):
+    def _save(self) -> None:
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         with self.cache_file.open("w", encoding="utf-8") as f:
             json.dump(self.goodmap, f, ensure_ascii=False, indent=4)
 
@@ -135,18 +135,21 @@ class GoodCounter:
 
     def add(self, message_session: str) -> int:
         self.goodmap[message_session] = self.goodmap.get(message_session, 0) + 1
+        self._save()
         return self.goodmap[message_session]
 
     def remove(self, message_session: str) -> int:
         self.goodmap[message_session] = max(0, self.goodmap.get(message_session, 0) - 1)
+        self._save()
         return self.goodmap[message_session]
 
     def modify(self, message_session: str, count: int) -> int:
         self.goodmap[message_session] = count
+        self._save()
         return self.goodmap[message_session]
 
-    def ToogoodToessence(self, message_session: str):
-        return self.goodmap[message_session] >= self.good_bound
+    def too_good_to_essence(self, message_session: str) -> bool:
+        return self.get(message_session) >= self.good_bound
 
 
 MessageType = Literal["text", "image", "at", "reply", "group", "face"]
