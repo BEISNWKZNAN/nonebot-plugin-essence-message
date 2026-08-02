@@ -9,10 +9,38 @@ from urllib.parse import urlparse
 
 import httpx
 from nonebot.adapters.onebot.v11.bot import Bot
+from nonebot.log import logger
 
 
 FORMAT_VERSION = 3
 MAX_NESTING_DEPTH = 256
+
+
+def _decode_base64_source(source: str) -> tuple[Optional[bytes], int]:
+    payload = "".join(source.removeprefix("base64://").split())
+    padding = (-len(payload)) % 4
+    try:
+        return base64.b64decode(payload + "=" * padding, validate=True), padding
+    except (ValueError, binascii.Error):
+        return None, padding
+
+
+def _is_complete_media(content: bytes, media_type: str) -> bool:
+    if not content:
+        return False
+    if media_type != "image":
+        return True
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return content.endswith(b"IEND\xaeB`\x82")
+    if content.startswith(b"\xff\xd8\xff"):
+        return content.endswith(b"\xff\xd9")
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return content.endswith(b";")
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return len(content) >= 12 and int.from_bytes(content[4:8], "little") + 8 <= len(
+            content
+        )
+    return True
 
 
 class Msg:
@@ -106,7 +134,10 @@ class Msg:
         image_dir: Path,
         database_dir: Path,
     ) -> "Msg":
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0),
+        ) as client:
             children = await cls._from_onebot_segments(
                 raw_message["message"],
                 bot,
@@ -150,27 +181,46 @@ class Msg:
 
             children: list[Msg] = []
             if segment_type in {"image", "record", "video"}:
-                content, source = await _download_media(data, client)
-                if content is not None:
-                    media_dir = (
-                        image_dir
-                        if segment_type == "image"
-                        else database_dir / "media" / segment_type
-                    )
-                    relative_path = await asyncio.to_thread(
-                        store_media,
-                        content,
-                        media_dir,
-                        database_dir,
+                source_kind = (
+                    "base64"
+                    if isinstance(data.get("file"), str)
+                    and data["file"].startswith("base64://")
+                    else "url"
+                    if isinstance(data.get("url"), str)
+                    else "file-id"
+                    if data.get("file") is not None
+                    else "missing"
+                )
+                content, source = await _download_media(
+                    data,
+                    client,
+                    segment_type,
+                )
+                if content is None:
+                    logger.warning(
+                        "媒体持久化失败, 跳过消息段: type={} source={}",
                         segment_type,
-                        source,
+                        source_kind,
                     )
-                    data["local_path"] = relative_path
-                    # NapCat may refresh these values for the same media. Once a
-                    # durable local copy exists, keeping them would make content
-                    # hashes unstable across repeated fetches.
-                    data.pop("file", None)
-                    data.pop("url", None)
+                    continue
+                media_dir = (
+                    image_dir
+                    if segment_type == "image"
+                    else database_dir / "media" / segment_type
+                )
+                relative_path = await asyncio.to_thread(
+                    store_media,
+                    content,
+                    media_dir,
+                    database_dir,
+                    segment_type,
+                    source,
+                )
+                data["local_path"] = relative_path
+                # file IDs and URLs are temporary transport details. They must
+                # never enter the database.
+                data.pop("file", None)
+                data.pop("url", None)
             elif segment_type == "reply":
                 reply_id = data.get("id", data.get("seq"))
                 reply_key = str(reply_id) if reply_id is not None else ""
@@ -283,11 +333,8 @@ class Msg:
         if self.type == "image":
             source = self.data.get("file")
             if isinstance(source, str) and source.startswith("base64://"):
-                try:
-                    content = base64.b64decode(source[9:], validate=True)
-                except (ValueError, binascii.Error):
-                    content = None
-                if content is not None:
+                content, _ = _decode_base64_source(source)
+                if content is not None and _is_complete_media(content, "image"):
                     self.data.pop("file", None)
                     self.data["local_path"] = store_media(
                         content, image_dir, database_dir, "image"
@@ -298,11 +345,9 @@ class Msg:
         return migrated
 
     def discard_stored_media_sources(self) -> int:
-        """Remove volatile remote sources when a durable local copy exists."""
+        """Remove volatile URLs and file IDs from stored media."""
         changed = 0
-        if self.type in {"image", "record", "video"} and isinstance(
-            self.data.get("local_path", self.data.get("path")), str
-        ):
+        if self.type in {"image", "record", "video"}:
             for key in ("file", "url"):
                 if key in self.data:
                     self.data.pop(key)
@@ -311,6 +356,25 @@ class Msg:
             changed += child.discard_stored_media_sources()
         return changed
 
+    def prune_empty_children(self) -> None:
+        for child in self.children:
+            child.prune_empty_children()
+        self.children = [child for child in self.children if child.has_content()]
+
+    def normalize_root(self) -> "Msg":
+        if self.type == "group" and len(self.children) == 1:
+            return self.children[0]
+        return self
+
+    def has_content(self) -> bool:
+        if self.type in {"image", "record", "video"}:
+            return isinstance(self.data.get("local_path", self.data.get("path")), str)
+        if self.type in {"group", "reply", "node", "forward"}:
+            return any(child.has_content() for child in self.children)
+        if self.type == "text":
+            return isinstance(self.data.get("text"), str) and bool(self.data["text"])
+        return bool(self.data) or bool(self.children)
+
     def text_content(self) -> str:
         text = ""
         if self.type == "text":
@@ -318,6 +382,20 @@ class Msg:
             if isinstance(value, str):
                 text = value
         return text + "".join(child.text_content() for child in self.children)
+
+    def contains_only_truncated_images(self) -> bool:
+        """Return whether this message has no content except truncated images."""
+        if self.type == "image":
+            source = self.data.get("file")
+            if not isinstance(source, str) or not source.startswith("base64://"):
+                return False
+            content, _ = _decode_base64_source(source)
+            return content is None or not _is_complete_media(content, "image")
+        if self.type in {"group", "reply", "node", "forward"} and self.children:
+            return all(
+                child.contains_only_truncated_images() for child in self.children
+            )
+        return False
 
 
 def _decode_document(value: str | bytes) -> str:
@@ -363,26 +441,28 @@ def _legacy_parse(value: str) -> list[str]:
 
 
 def _legacy_nodes(message_type: str, value: str) -> list[Msg]:
+    if message_type not in {"text", "image", "at", "face", "reply", "group"}:
+        raise ValueError("Unsupported legacy message type")
     if message_type == "group":
         nodes = []
         for raw_node in _legacy_parse(value):
             fields = _legacy_parse(raw_node)
             if fields:
-                nodes.extend(
-                    _legacy_nodes(
-                        fields[0], ",".join(fields[1:]) if len(fields) > 1 else ""
-                    )
-                )
+                nested_type = fields[0]
+                nested_value = ",".join(fields[1:]) if len(fields) > 1 else ""
+                if nested_type == "group" and nested_value:
+                    nested_value += ","
+                nodes.extend(_legacy_nodes(nested_type, nested_value))
         return nodes
     if message_type == "reply":
         fields = _legacy_parse(value)
-        children = (
-            _legacy_nodes(
-                fields[0], ",".join(fields[1:]) if len(fields) > 1 else ""
-            )
-            if fields
-            else []
-        )
+        if not fields:
+            return [Msg("reply")]
+        nested_type = fields[0]
+        nested_value = ",".join(fields[1:]) if len(fields) > 1 else ""
+        if nested_type == "group" and nested_value:
+            nested_value += ","
+        children = _legacy_nodes(nested_type, nested_value)
         return [Msg("reply", children=children)]
     data_key = {
         "text": "text",
@@ -412,14 +492,16 @@ def _copy_message_metadata(target: dict[str, Any], message: dict[str, Any]) -> N
 
 
 async def _download_media(
-    data: dict[str, Any], client: httpx.AsyncClient
+    data: dict[str, Any],
+    client: httpx.AsyncClient,
+    media_type: str,
 ) -> tuple[Optional[bytes], Optional[str]]:
     source = data.get("file")
     if isinstance(source, str) and source.startswith("base64://"):
-        try:
-            return base64.b64decode(source[9:], validate=True), source
-        except (ValueError, binascii.Error):
-            return None, source
+        content, _ = _decode_base64_source(source)
+        if content is not None and _is_complete_media(content, media_type):
+            return content, source
+        return None, source
 
     url = data.get("url")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
@@ -427,7 +509,15 @@ async def _download_media(
     try:
         response = await client.get(url)
         response.raise_for_status()
-        return response.content, url
+        content = response.content
+        content_type = response.headers.get("content-type", "").lower()
+        if not content:
+            return None, url
+        if content_type.startswith("text/") or "json" in content_type:
+            return None, url
+        if not _is_complete_media(content, media_type):
+            return None, url
+        return content, str(response.url)
     except httpx.HTTPError:
         return None, url
 
@@ -475,22 +565,29 @@ def store_media(
     return path.relative_to(database_dir).as_posix()
 
 
-def resolve_media_source(data: dict[str, Any], database_dir: Path) -> Optional[str]:
+def resolve_media_source(
+    data: dict[str, Any], database_dir: Path
+) -> Optional[str]:
     relative_path = data.get("local_path", data.get("path"))
     if isinstance(relative_path, str):
         path = Path(relative_path)
         path = path if path.is_absolute() else database_dir / path
         try:
-            content = path.read_bytes()
+            if path.is_file():
+                content = path.read_bytes()
+                encoded = base64.b64encode(content).decode("ascii")
+                return "base64://" + encoded
         except OSError:
             pass
-        else:
-            return "base64://" + base64.b64encode(content).decode("ascii")
+
     source = data.get("file")
-    if isinstance(source, str):
-        return source
-    url = data.get("url")
-    return url if isinstance(url, str) else None
+    if isinstance(source, str) and source.startswith("base64://"):
+        content, _ = _decode_base64_source(source)
+        if content is not None and _is_complete_media(content, "image"):
+            encoded = base64.b64encode(content).decode("ascii")
+            return "base64://" + encoded
+        return None
+    return None
 
 
 # Kept for callers using the old public helpers.
@@ -498,5 +595,7 @@ def store_image(content: bytes, image_dir: Path, database_dir: Path) -> str:
     return store_media(content, image_dir, database_dir, "image")
 
 
-def resolve_image_path(data: dict[str, Any], database_dir: Path) -> Optional[str]:
+def resolve_image_path(
+    data: dict[str, Any], database_dir: Path
+) -> Optional[str]:
     return resolve_media_source(data, database_dir)

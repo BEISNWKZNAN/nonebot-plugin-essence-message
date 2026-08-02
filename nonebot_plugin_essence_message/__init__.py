@@ -7,7 +7,6 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     GroupMessageEvent,
 )
-from nonebot.adapters.onebot.v11.message import Message
 from nonebot.permission import SUPERUSER
 from nonebot.log import logger
 from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER
@@ -17,9 +16,13 @@ from nonebot import require
 import os
 
 require("nonebot_plugin_alconna")
-from arclet.alconna import Alconna, Args, Subcommand
-from nonebot_plugin_alconna import AlconnaMatch, Match, Query, on_alconna
-from .dataset import DatabaseHandler
+from arclet.alconna import Alconna, Args, Arparma, Option, Subcommand
+from nonebot_plugin_alconna import Query, on_alconna
+from .dataset import (
+    build_query_from_args,
+    DatabaseHandler,
+    QueryValidationError,
+)
 from .config import Config
 from .Helper import (
     ReactGoodNoticeEvent,
@@ -28,12 +31,11 @@ from .Helper import (
     ReactWhaleNoticeEvent,
     SaveMsg,
     RateLimiter,
-    SendMsg,
     NoticePermission,
     get_name,
+    send_query_results,
     whale_essnece_set,
 )
-from .msg import Msg
 
 __plugin_meta__ = PluginMetadata(
     name="精华消息管理",
@@ -103,7 +105,7 @@ async def _initialize_database() -> None:
         percent = 100 if total == 0 else completed * 100 // total
         if percent >= last_logged_percent + 10 or completed == total:
             logger.info(
-                "精华消息数据库重建进度：{}/{}（{}%）",
+                "精华消息数据库重建进度: {}/{}({}%)",
                 completed,
                 total,
                 percent,
@@ -114,9 +116,9 @@ async def _initialize_database() -> None:
     if not rebuilding:
         return
     if backup_path is not None:
-        logger.info("重建前数据库备份已保存至：{}", backup_path)
+        logger.info("重建前数据库备份已保存至: {}", backup_path)
     logger.info(
-        "精华消息数据库迁移完成：转换 {} 条记录，提取 {} 张图片",
+        "精华消息数据库迁移完成: 转换 {} 条记录, 提取 {} 张图片",
         migrated_rows,
         migrated_images,
     )
@@ -130,12 +132,39 @@ whale_essnece = on_notice(
 essence_set = on_notice(rule=essence_set_rule, priority=10, block=False)
 trigood = on_notice(rule=trigood_rule, priority=11, block=False)
 
+
+def _query_options(*, search: bool = False) -> tuple[Option, ...]:
+    options = (
+        Option("--from", Args["from_time", str]),
+        Option("--to", Args["to_time", str]),
+        Option("--last", Args["last_time", str]),
+        Option("--sender-id|--send-id", Args["sender_id", int]),
+        Option("--operator-id", Args["operator_id", int]),
+        Option("--exclude-sender-id", Args["exclude_sender_id", int]),
+        Option("--exclude-operator-id", Args["exclude_operator_id", int]),
+        Option("--group-id", Args["source_group_id", int]),
+        Option("--type", Args["message_type", str]),
+        Option("--count|-n", Args["count", int]),
+    )
+    if not search:
+        return options
+    return options + (
+        Option("--order", Args["order", str]),
+        Option("--exact"),
+        Option("--regex"),
+    )
+
+
 essence_cmd = on_alconna(
     Alconna(
         "essence",
         Subcommand("help"),
-        Subcommand("random"),
-        Subcommand("search", Args["keyword", str]),
+        Subcommand("random", *_query_options()),
+        Subcommand(
+            "search",
+            Args["keyword?", str],
+            *_query_options(search=True),
+        ),
         Subcommand("rank", Args["type", str]),
     ),
     rule=essence_enable_rule,
@@ -173,7 +202,7 @@ async def _(event: NoticeEvent, bot: Bot):
             except Exception:
                 pass
             if msg is None:
-                logger.warning("无法获取精华消息，跳过保存：group_id={}", event.group_id)
+                logger.warning("无法获取精华消息, 跳过保存: group_id={}", event.group_id)
                 await whale_essnece.finish()
             await SaveMsg(
                 db,
@@ -196,7 +225,7 @@ async def _(event: NoticeEvent, bot: Bot):
             except Exception:
                 pass
             if msg is None:
-                logger.warning("无法获取精华消息，跳过删除：group_id={}", event.group_id)
+                logger.warning("无法获取精华消息, 跳过删除: group_id={}", event.group_id)
                 await whale_essnece.finish()
             await SaveMsg(
                 db,
@@ -239,7 +268,7 @@ async def ___(event: NoticeEvent, bot: Bot):
                 break
     if msg is None:
         logger.warning(
-            "无法获取精华消息内容，跳过事件：group_id={} sub_type={}",
+            "无法获取精华消息内容, 跳过事件: group_id={} sub_type={}",
             event.group_id,
             event.sub_type,
         )
@@ -299,7 +328,7 @@ async def __(event: NoticeEvent, bot: Bot):
                             break
                 if msg is None or sender is None:
                     logger.warning(
-                        "无法获取取消点赞的消息，跳过数据库删除：group_id={}",
+                        "无法获取取消点赞的消息, 跳过数据库删除: group_id={}",
                         event.group_id,
                     )
                     await trigood.finish()
@@ -349,7 +378,7 @@ async def __(event: NoticeEvent, bot: Bot):
                                 break
                     if msg is None or sender is None:
                         logger.warning(
-                            "无法获取取消点赞的消息，跳过数据库删除：group_id={}",
+                            "无法获取取消点赞的消息, 跳过数据库删除: group_id={}",
                             event.group_id,
                         )
                         await trigood.finish()
@@ -374,69 +403,78 @@ async def __(event: NoticeEvent, bot: Bot):
 @essence_cmd.assign("help")
 async def help_cmd():
     await essence_cmd.finish(
-        "使用说明:\n"
-        + "essence help - 显示此帮助信息\n"
-        + "essence random - 从当前随机发送一条精华消息\n"
-        + "essence rank sender - 显示发送者排行榜\n"
-        + "essence rank operator - 显示设精数量排行榜\n"
-        + "essence search <str> - 搜索全部文本，随机恢复至多 5 条\n"
-        + "essence fetchall - [管理员]同步群内全部精华消息及媒体文件到本地\n"
-        + "essence export - [管理员]打包导出数据库、CSV 和媒体文件\n"
-        + "essence switch - [管理员]切换手动清理模式，暂停或恢复删精事件的数据库联动\n"
-        + "essence clean - [管理员]备份后删除群内全部精华消息，数据库记录保留"
+        "Commands:\n"
+        "essence help - 显示此帮助信息\n"
+        "essence random [options] - 从筛选结果随机发送精华消息\n"
+        "essence search [keyword] [options] - 搜索或筛选精华消息\n"
+        "essence rank sender - 显示发送者排行榜\n"
+        "essence rank operator - 显示设精数量排行榜\n"
+        "essence fetchall - [管理员]同步群内全部精华消息及媒体文件到本地\n"
+        "essence export - [管理员]打包导出数据库、CSV 和媒体文件\n"
+        "essence switch - [管理员]切换手动清理模式, 暂停或恢复删精事件的数据库联动\n"
+        "essence clean - [管理员]备份后删除群内全部精华消息, 数据库记录保留\n"
+        "\nOptions for random/search:\n"
+        "--from <time> - 设置设精时间下限\n"
+        "--to <time> - 设置设精时间上限\n"
+        "--last <duration> - 限定最近一段时间, 例如 30m、12h、7d、4w\n"
+        "--sender-id <qq>, --send-id <qq> - 按发送者筛选\n"
+        "--operator-id <qq> - 按设精操作者筛选\n"
+        "--exclude-sender-id <qq> - 排除指定发送者\n"
+        "--exclude-operator-id <qq> - 排除指定设精操作者\n"
+        "--group-id <group> - 限定共享池内的来源群\n"
+        "--type <type> - 按消息类型筛选, 支持 "
+        "text/image/record/forward/mixed\n"
+        "--count <count>, -n <count> - 设置返回数量; random 默认 1、最多 10."
+        "search 默认 5、最多 20\n"
+        "\nOptions for search:\n"
+        "--order <random|newest|oldest> - 设置结果顺序\n"
+        "--exact - 完整文本匹配\n"
+        "--regex - 正则表达式匹配\n"
+        "\n<time> 支持 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm[:ss];"
+        "--last 不能与 --from 或 --to 同时使用."
     )
 
 
 @essence_cmd.assign("random")
-async def random_cmd(event: GroupMessageEvent, bot: Bot):
+async def random_cmd(event: GroupMessageEvent, bot: Bot, arp: Arparma):
     if ratelimiter.reach_limit(event.get_session_id()):
         await essence_cmd.finish("过量抽精华有害身心健康")
-    else:
-        pool = cfg.essence_pool(event.group_id)
-        msg = await db.random_essence(pool or ())
-        if msg == None:
-            await essence_cmd.finish(
-                MessageSegment.text(
-                    "目前数据库里没有精华消息，可以使用essence fetchall抓取群里的精华消息"
-                )
+    pool = cfg.essence_pool(event.group_id)
+    if pool is None:
+        await essence_cmd.finish("当前群未启用精华消息功能")
+        return
+    try:
+        query = build_query_from_args(arp.query, "random", pool)
+        rows = await db.query_entries(query)
+    except QueryValidationError as error:
+        await essence_cmd.finish(f"参数错误: {error}")
+    if not rows:
+        await essence_cmd.finish(
+            MessageSegment.text(
+                "没有符合条件的精华消息; 若数据库为空, 可使用 essence fetchall 同步"
             )
-        else:
-            rand = SendMsg(Msg.from_database(msg[4], msg[5]), db, bot, msg[1])
-            random = (
-                MessageSegment.text(f"{await rand.get_name(msg[2])}:")
-                + await rand.get_msg()
-            )
-            random.reduce()
-            await essence_cmd.finish(random)
+        )
+    await send_query_results(essence_cmd, db, event, bot, rows)
 
 
 @essence_cmd.assign("search")
 async def search_cmd(
-    event: GroupMessageEvent, bot: Bot, keyword: Match[str] = AlconnaMatch("keyword")
+    event: GroupMessageEvent,
+    bot: Bot,
+    arp: Arparma,
 ):
     pool = cfg.essence_pool(event.group_id)
-    msg = await db.search_entries(pool or (), keyword.result)
-    if not any(msg):
+    if pool is None:
+        await essence_cmd.finish("当前群未启用精华消息功能")
+        return
+    try:
+        query = build_query_from_args(arp.query, "search", pool)
+        rows = await db.query_entries(query)
+    except QueryValidationError as error:
+        await essence_cmd.finish(f"参数错误: {error}")
+    if not rows:
         await essence_cmd.finish("没有找到")
-    sender_ids = [sender_id for _, _, sender_id, _, _, _ in msg]
-    names = await gather(
-        *[get_name(db, bot, row[1], sender_id) for row, sender_id in zip(msg, sender_ids)]
-    )
-    result = Message()
-    for index, (name, row) in enumerate(zip(names, msg)):
-        if index:
-            result += MessageSegment.text("\n\n")
-        message_type, message_data = row[4], row[5]
-        rendered = SendMsg(
-            Msg.from_database(message_type, message_data),
-            db,
-            bot,
-            row[1],
-        )
-        result += MessageSegment.text(f"{name}:")
-        result += await rendered.get_msg()
-    result.reduce()
-    await essence_cmd.finish(result)
+    await send_query_results(essence_cmd, db, event, bot, rows)
 
 
 @essence_cmd.assign("rank")
@@ -512,10 +550,10 @@ async def export_cmd(event: GroupMessageEvent, bot: Bot):
             file=path,
             name=os.path.basename(path),
         )
-        await essence_cmd.finish("导出完成，请检查群文件")
+        await essence_cmd.finish("导出完成, 请检查群文件")
     except:
         await essence_cmd.finish(
-            "上传失败，请联系 Bot 管理员获取插件数据目录下的 "
+            "上传失败, 请联系 Bot 管理员获取插件数据目录下的 "
             f"{os.path.basename(path)}"
         )
 
@@ -578,7 +616,7 @@ async def clean_cmd(event: GroupMessageEvent, bot: Bot):
 async def switch_cmd(event: GroupMessageEvent, bot: Bot):
     if event.group_id in clean_running:
         clean_running.remove(event.group_id)
-        await essence_cmd.finish("已关闭手动清理模式，删精时将同步删除数据库记录")
+        await essence_cmd.finish("已关闭手动清理模式, 删精时将同步删除数据库记录")
     else:
         clean_running.add(event.group_id)
-        await essence_cmd.finish("已开启手动清理模式，删精时将保留数据库记录")
+        await essence_cmd.finish("已开启手动清理模式, 删精时将保留数据库记录")

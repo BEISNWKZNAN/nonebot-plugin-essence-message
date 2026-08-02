@@ -3,14 +3,15 @@ import json
 from pathlib import Path
 from time import time
 from nonebot.adapters.onebot.v11.bot import Bot
-from nonebot.adapters.onebot.v11 import NoticeEvent
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, NoticeEvent
 from nonebot.adapters.onebot.v11.message import Message
-from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, Protocol, TypedDict, Union
 from nonebot.adapters.onebot.v11 import MessageSegment
+from nonebot.log import logger
 from nonebot.permission import Permission
 from pydantic import BaseModel
 
-from .dataset import DatabaseHandler
+from .dataset import DatabaseHandler, EssenceRow
 from .msg import Msg, resolve_media_source
 
 
@@ -189,6 +190,15 @@ class SaveMsg:
             Path(self.db.db_path).parent / "img",
             Path(self.db.db_path).parent,
         )
+        data.prune_empty_children()
+        data = data.normalize_root()
+        if not data.has_content():
+            logger.warning(
+                "精华消息没有可持久化内容, 跳过保存: group_id={} sender_id={}",
+                self.group_id,
+                self.sender_id,
+            )
+            return False
         self.msg_data = {
             "time": self.timestamp,
             "group_id": self.group_id,
@@ -211,6 +221,15 @@ class SaveMsg:
             Path(self.db.db_path).parent / "img",
             Path(self.db.db_path).parent,
         )
+        data.prune_empty_children()
+        data = data.normalize_root()
+        if not data.has_content():
+            logger.warning(
+                "精华消息没有可用于删除匹配的内容: group_id={} sender_id={}",
+                self.group_id,
+                self.sender_id,
+            )
+            return False
         self.msg_data = {
             "time": self.timestamp,
             "group_id": self.group_id,
@@ -337,7 +356,7 @@ class SendMsg:
             elif message.type == "image":
                 source = resolve_media_source(message.data, database_dir)
                 if source is not None:
-                    result += MessageSegment.image(file=source)
+                    result += MessageSegment.image(file=source, cache=False)
             elif message.type == "record":
                 source = resolve_media_source(message.data, database_dir)
                 if source is not None:
@@ -347,8 +366,13 @@ class SendMsg:
             elif message.type == "text":
                 result += MessageSegment.text(str(message.data.get("text", "")))
             elif message.type == "reply":
-                result += await self._render(message.children, depth + 1)
-                result += MessageSegment.text("\n" + ">" * max(depth, 1) + " ")
+                quoted = await self._render(message.children, depth + 1)
+                if quoted:
+                    if result:
+                        result += MessageSegment.text("\n")
+                    result += MessageSegment.text(">" * (depth + 1) + " ")
+                    result += quoted
+                    result += MessageSegment.text("\n")
             elif message.type in {"node", "forward"} and message.children:
                 sender = message.data.get("nickname")
                 if not isinstance(sender, str):
@@ -362,7 +386,101 @@ class SendMsg:
                     result += MessageSegment.text(f"\n{sender}: ")
                 result += await self._render(message.children, depth + 1)
             elif message.type == "face":
-                result += MessageSegment.face(int(message.data.get("id", 0)))
+                try:
+                    face_id = int(message.data.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                result += MessageSegment.face(face_id)
             else:
                 result += MessageSegment(type=message.type, data=message.data)
         return result
+
+
+async def render_query_entry(
+    db: DatabaseHandler,
+    row: EssenceRow,
+    bot: Bot,
+    *,
+    target_group_id: int,
+    include_name: bool,
+) -> tuple[str, Message]:
+    _, group_id, sender_id, _, message_type, message_data = row
+    name = await get_name(db, bot, group_id, sender_id)
+    display_name = name if group_id == target_group_id else f"{name}(群 {group_id})"
+    rendered = SendMsg(
+        Msg.from_database(message_type, message_data),
+        db,
+        bot,
+        group_id,
+    )
+    result = Message()
+    if include_name:
+        result += MessageSegment.text(f"{display_name}:")
+    result += await rendered.get_msg()
+    result.reduce()
+    return display_name, result
+
+
+class QueryResultMatcher(Protocol):
+    async def finish(self, message: Any = None) -> None: ...
+
+
+async def send_query_results(
+    matcher: QueryResultMatcher,
+    db: DatabaseHandler,
+    event: GroupMessageEvent,
+    bot: Bot,
+    rows: list[EssenceRow],
+) -> None:
+    if len(rows) == 1:
+        _, message = await render_query_entry(
+            db,
+            rows[0],
+            bot,
+            target_group_id=event.group_id,
+            include_name=True,
+        )
+        await matcher.finish(message)
+        return
+
+    rendered = await asyncio.gather(
+        *[
+            render_query_entry(
+                db,
+                row,
+                bot,
+                target_group_id=event.group_id,
+                include_name=False,
+            )
+            for row in rows
+        ]
+    )
+    nodes = []
+    for row, (name, message) in zip(rows, rendered):
+        bot_id = int(bot.self_id)
+        bot_name = await get_name(db, bot, event.group_id, bot_id)
+        if row[4] == "text":
+            content = MessageSegment.text(f"{name}:") + message
+            nodes.append(MessageSegment.node_custom(bot_id, bot_name, content))
+        else:
+            nodes.append(
+                MessageSegment.node_custom(
+                    bot_id,
+                    bot_name,
+                    MessageSegment.text(name),
+                )
+            )
+            nodes.append(MessageSegment.node_custom(bot_id, bot_name, message))
+    try:
+        await bot.send_group_forward_msg(group_id=event.group_id, messages=nodes)
+    except Exception:
+        logger.exception("合并转发发送失败, 降级为普通消息")
+        fallback = Message()
+        for index, (_, (name, message)) in enumerate(zip(rows, rendered)):
+            if index:
+                fallback += MessageSegment.text("\n\n")
+            fallback += MessageSegment.text(f"{name}:")
+            fallback += message
+        fallback.reduce()
+        await matcher.finish(fallback)
+    await matcher.finish()
